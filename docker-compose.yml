@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:18-alpine
+    container_name: fitbud_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fitbud_bot
+      POSTGRES_USER: fitbud_user
+      POSTGRES_PASSWORD: 1234556788
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fitbud_user -d fitbud_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fitbud_network
+
+  # Telegram бот
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fitbud_bot
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: 8440870185:AAGfwJfRXPNTfDsI44MBKdJ8nQnYIuWjC7U
+      DB_NAME: fitbud_bot
+      DB_USER: fitbud_user
+      DB_PASSWORD: 1234556788
+      DB_HOST: postgres
+      DB_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - fitbud_network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  fitbud_network:
+    driver: bridge
