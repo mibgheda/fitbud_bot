@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Boolean, Text, JSON
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -53,6 +53,13 @@ class CalorieEntry(Base):
     carbs = Column(Float, default=0)  # углеводы в граммах
     fats = Column(Float, default=0)  # жиры в граммах
     meal_type = Column(String(50))  # breakfast, lunch, dinner, snack
+    
+    # AI-Hub поля
+    source_type = Column(String(20), default='manual')  # manual, voice, photo, text_ai
+    source_data = Column(JSON)  # Оригинальные данные (путь к фото, текст голоса и т.д.)
+    ai_confidence = Column(Float)  # Уверенность AI в анализе (0-1)
+    ai_notes = Column(Text)  # Заметки/рекомендации от AI
+    
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -66,6 +73,14 @@ class WorkoutEntry(Base):
     duration = Column(Integer, nullable=False)  # продолжительность в минутах
     calories_burned = Column(Integer, default=0)
     notes = Column(String(500))
+    
+    # AI-Hub поля
+    source_type = Column(String(20), default='manual')  # manual, voice, text_ai
+    intensity = Column(String(20))  # low, medium, high
+    distance = Column(Float)  # расстояние в км (если применимо)
+    pace = Column(String(50))  # темп (если применимо)
+    ai_confidence = Column(Float)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -76,6 +91,54 @@ class WeightLog(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger, nullable=False)
     weight = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HealthData(Base):
+    """Модель для хранения анализов и медицинских данных"""
+    __tablename__ = 'health_data'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, nullable=False)
+    data_type = Column(String(50), nullable=False)  # blood_test, hormone, vitamin, etc.
+    parameter_name = Column(String(100), nullable=False)  # ferritin, vitamin_d, hemoglobin, etc.
+    value = Column(Float, nullable=False)
+    unit = Column(String(20))  # мкг/л, нг/мл, etc.
+    reference_min = Column(Float)  # нижняя граница нормы
+    reference_max = Column(Float)  # верхняя граница нормы
+    is_normal = Column(Boolean)  # в пределах нормы или нет
+    
+    # Источник данных
+    source_type = Column(String(20), default='manual')  # manual, ocr_photo
+    source_file_path = Column(String(500))  # путь к фото анализа
+    
+    notes = Column(Text)  # Комментарии врача или AI
+    test_date = Column(DateTime)  # дата сдачи анализа
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AIInteraction(Base):
+    """Лог всех взаимодействий с AI для контекста и аналитики"""
+    __tablename__ = 'ai_interactions'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, nullable=False)
+    interaction_type = Column(String(50), nullable=False)  # food_analysis, workout_analysis, recommendation, consultation
+    
+    # Входные данные
+    input_type = Column(String(20))  # voice, photo, text
+    input_data = Column(Text)  # текст запроса или описание
+    input_file_path = Column(String(500))  # путь к медиа-файлу
+    
+    # Выходные данные AI
+    ai_response = Column(JSON)  # структурированный ответ AI
+    ai_model = Column(String(50))  # gpt-4o, gpt-4o-mini, whisper-1
+    ai_confidence = Column(Float)
+    
+    # Связь с созданными записями
+    created_entry_type = Column(String(50))  # calorie_entry, workout_entry, health_data
+    created_entry_id = Column(Integer)  # ID созданной записи
+    
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

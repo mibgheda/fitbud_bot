@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import os
 
 from database.database import init_db
-from handlers import start, calories, fitness, profile, stats
+from handlers import start, calories, fitness, profile, stats, ai_hub
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -33,6 +33,7 @@ async def main():
     
     # Подключаем роутеры из handlers
     dp.include_router(start.router)
+    dp.include_router(ai_hub.router)  # AI Hub должен быть перед calories и fitness
     dp.include_router(calories.router)
     dp.include_router(fitness.router)
     dp.include_router(profile.router)
