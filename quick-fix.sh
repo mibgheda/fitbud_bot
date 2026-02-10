@@ -26,11 +26,7 @@ if [ $? -ne 0 ]; then
 -- Добавление новых колонок в calorie_entries (если не существуют)
 DO $$ 
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                   WHERE table_name='calorie_entries' AND column_name='source_type') THEN
-        ALTER TABLE calorie_entries ADD COLUMN source_type VARCHAR(20) DEFAULT 'manual';
-    END IF;
-    
+        
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                    WHERE table_name='calorie_entries' AND column_name='source_data') THEN
         ALTER TABLE calorie_entries ADD COLUMN source_data JSON;
