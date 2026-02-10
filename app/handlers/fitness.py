@@ -42,12 +42,6 @@ async def start_add_workout(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("workout_"))
 async def process_workout_type(callback: CallbackQuery, state: FSMContext):
     """Обработка типа тренировки"""
-    if callback.data == "cancel":
-        await callback.message.edit_text("❌ Добавление отменено")
-        await state.clear()
-        await callback.answer()
-        return
-    
     workout_type = callback.data.split("_")[1]
     
     if workout_type == "other":
@@ -162,3 +156,11 @@ async def process_notes(message: Message, state: FSMContext):
 
 
 from datetime import timedelta
+
+
+@router.callback_query(F.data == "cancel")
+async def cancel_workout_action(callback: CallbackQuery, state: FSMContext):
+    """Отмена добавления тренировки"""
+    await callback.message.edit_text("❌ Добавление отменено")
+    await state.clear()
+    await callback.answer()

@@ -67,12 +67,6 @@ async def process_calories(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("meal_"))
 async def process_meal_type(callback: CallbackQuery, state: FSMContext):
     """Сохранение записи о калориях"""
-    if callback.data == "cancel":
-        await callback.message.edit_text("❌ Добавление отменено")
-        await state.clear()
-        await callback.answer()
-        return
-    
     meal_type = callback.data.split("_")[1]
     data = await state.get_data()
     
