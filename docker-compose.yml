@@ -3,15 +3,16 @@ version: '3.8'
 services:
   # PostgreSQL база данных
   postgres:
-    image: postgres:18-alpine
+    image: postgres:15-alpine
     container_name: fitbud_postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: fitbud_bot
       POSTGRES_USER: fitbud_user
-      POSTGRES_PASSWORD: 1234556788
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme123}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./backups:/backups
     ports:
       - "5432:5432"
     healthcheck:
@@ -30,21 +31,20 @@ services:
     container_name: fitbud_bot
     restart: unless-stopped
     environment:
-      BOT_TOKEN: 8440870185:AAGfwJfRXPNTfDsI44MBKdJ8nQnYIuWjC7U
+      BOT_TOKEN: ${BOT_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       DB_NAME: fitbud_bot
       DB_USER: fitbud_user
-      DB_PASSWORD: 1234556788
+      DB_PASSWORD: ${DB_PASSWORD:-changeme123}
       DB_HOST: postgres
       DB_PORT: 5432
+    volumes:
+      - ./data/media:/app/media
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - fitbud_network
-
-volumes:
-  postgres_data:
-    driver: local
 
 networks:
   fitbud_network:
