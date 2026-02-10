@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:15-alpine
+    container_name: fitbud_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: fitbud_bot
+      POSTGRES_USER: fitbud_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./backups:/backups
+    # Не открываем порт наружу для безопасности
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fitbud_user -d fitbud_bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - fitbud_network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Telegram бот
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fitbud_bot:latest
+    container_name: fitbud_bot
+    restart: always
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DB_NAME: fitbud_bot
+      DB_USER: fitbud_user
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./data/media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - fitbud_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  fitbud_network:
+    driver: bridge
