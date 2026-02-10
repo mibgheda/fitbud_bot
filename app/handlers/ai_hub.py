@@ -22,7 +22,7 @@ from utils.openai_helper import (
 router = Router()
 
 # Директория для хранения медиа-файлов
-MEDIA_DIR = "/app/media" if os.path.exists("/app") else "./media"
+MEDIA_DIR = "/app/media"
 os.makedirs(f"{MEDIA_DIR}/voice", exist_ok=True)
 os.makedirs(f"{MEDIA_DIR}/photos", exist_ok=True)
 
@@ -151,7 +151,9 @@ async def handle_photo_message(message: Message, state: FSMContext):
             response += f"<b>Состав:</b>\n{items_text}\n\n"
         
         if food_data.get('notes'):
-            response += f"💡 <i>{food_data['notes']}</i>\n\n"
+            # Экранируем HTML в notes
+            notes = food_data['notes'].replace('<', '&lt;').replace('>', '&gt;')
+            response += f"💡 <i>{notes}</i>\n\n"
         
         response += f"Уверенность AI: {int(food_data['confidence'] * 100)}%"
         
@@ -258,7 +260,9 @@ async def process_food_entry(message: Message, text: str, source_type: str, file
         )
         
         if food_data.get('notes'):
-            response += f"\n💡 <i>{food_data['notes']}</i>"
+            # Экранируем HTML в notes
+            notes = food_data['notes'].replace('<', '&lt;').replace('>', '&gt;')
+            response += f"\n💡 <i>{notes}</i>"
         
         await message.answer(response, reply_markup=get_main_menu())
         
