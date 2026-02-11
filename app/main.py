@@ -44,7 +44,7 @@ async def main():
     # Инициализация базы данных
     await init_db()
     
-    logger.info("Бот запущен v5 (quick input, new_day, delete_account)")
+    logger.info("Бот запущен v6 (no manual buttons, validation, extended keywords, no consultation)")
     
     try:
         # Запуск бота
