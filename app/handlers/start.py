@@ -8,7 +8,8 @@ from datetime import datetime
 
 from database.database import (
     async_session, User, CalorieEntry, WorkoutEntry, WeightLog,
-    HealthData, AIInteraction, calc_today_start,
+    HealthData, AIInteraction, MealPlan, MealPlanItem,
+    WorkoutPlan, WorkoutPlanItem, calc_today_start,
 )
 from keyboards.reply import (
     get_main_menu,
@@ -346,6 +347,8 @@ async def cmd_help(message: Message, state: FSMContext):
         "<b>📖 Справка FitBud</b>\n\n"
         "<b>Основные функции:</b>\n\n"
         "✨ <b>Быстрый ввод</b> — запись еды и тренировок через AI\n"
+        "🍽 <b>План питания</b> — недельный план с рецептами от AI\n"
+        "🏋️ <b>План тренировок</b> — персональная программа от AI\n"
         "📈 <b>Моя статистика</b> — посмотреть прогресс\n"
         "👤 <b>Мой профиль</b> — просмотр профиля\n"
         "⚖️ <b>Записать вес</b> — добавить измерение веса\n\n"
@@ -423,6 +426,10 @@ async def process_delete_account(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
 
     async with async_session() as session:
+        await session.execute(delete(MealPlanItem).where(MealPlanItem.user_id == user_id))
+        await session.execute(delete(MealPlan).where(MealPlan.user_id == user_id))
+        await session.execute(delete(WorkoutPlanItem).where(WorkoutPlanItem.user_id == user_id))
+        await session.execute(delete(WorkoutPlan).where(WorkoutPlan.user_id == user_id))
         await session.execute(delete(CalorieEntry).where(CalorieEntry.user_id == user_id))
         await session.execute(delete(WorkoutEntry).where(WorkoutEntry.user_id == user_id))
         await session.execute(delete(WeightLog).where(WeightLog.user_id == user_id))

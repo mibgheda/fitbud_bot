@@ -4,6 +4,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 # Тексты кнопок главного меню — используется для фильтрации в FSM-хэндлерах
 MENU_BUTTONS = [
     "✨ Быстрый ввод",
+    "🍽 План питания", "🏋️ План тренировок",
     "📈 Моя статистика", "👤 Мой профиль",
     "⚖️ Записать вес", "❓ Помощь"
 ]
@@ -25,6 +26,7 @@ def get_main_menu():
     """Главное меню бота"""
     keyboard = [
         [KeyboardButton(text="✨ Быстрый ввод")],
+        [KeyboardButton(text="🍽 План питания"), KeyboardButton(text="🏋️ План тренировок")],
         [KeyboardButton(text="📈 Моя статистика"), KeyboardButton(text="👤 Мой профиль")],
         [KeyboardButton(text="⚖️ Записать вес"), KeyboardButton(text="❓ Помощь")]
     ]
@@ -129,6 +131,99 @@ def get_ai_workout_confirm_keyboard():
             InlineKeyboardButton(text="✏️ Изменить", callback_data="ai_workout_edit")
         ]
     ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+
+
+def get_meal_plan_day_keyboard(plan_id: int, current_day: int, items: list):
+    """Клавиатура навигации плана питания на день"""
+    keyboard = []
+
+    # Кнопки для каждого приёма пищи: рецепт + выполнено
+    meal_emoji = {'breakfast': '🌅', 'lunch': '🌞', 'dinner': '🌙', 'snack': '🍎'}
+    for item in items:
+        row = []
+        emoji = meal_emoji.get(item.meal_type, '🍽')
+        if item.is_completed:
+            row.append(InlineKeyboardButton(
+                text=f"✅ {emoji} Выполнено",
+                callback_data=f"_"  # noop
+            ))
+        else:
+            row.append(InlineKeyboardButton(
+                text=f"📖 Рецепт",
+                callback_data=f"mpr_{item.id}"
+            ))
+            row.append(InlineKeyboardButton(
+                text=f"✅ Съел",
+                callback_data=f"mpc_{item.id}"
+            ))
+        keyboard.append(row)
+
+    # Навигация по дням
+    nav_row = []
+    if current_day > 0:
+        nav_row.append(InlineKeyboardButton(
+            text=f"← {DAY_NAMES[current_day - 1]}",
+            callback_data=f"mpd_{plan_id}_{current_day - 1}"
+        ))
+    nav_row.append(InlineKeyboardButton(
+        text=f"· {DAY_NAMES[current_day]} ·",
+        callback_data="_"
+    ))
+    if current_day < 6:
+        nav_row.append(InlineKeyboardButton(
+            text=f"{DAY_NAMES[current_day + 1]} →",
+            callback_data=f"mpd_{plan_id}_{current_day + 1}"
+        ))
+    keyboard.append(nav_row)
+
+    # Новый план
+    keyboard.append([InlineKeyboardButton(text="🔄 Новый план", callback_data="mpn")])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_workout_plan_day_keyboard(plan_id: int, current_day: int, item=None):
+    """Клавиатура навигации плана тренировок на день"""
+    keyboard = []
+
+    # Кнопка выполнения
+    if item and not item.is_rest_day:
+        if item.is_completed:
+            keyboard.append([InlineKeyboardButton(
+                text="✅ Тренировка выполнена",
+                callback_data="_"
+            )])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                text="✅ Отметить выполненной",
+                callback_data=f"wpc_{item.id}"
+            )])
+
+    # Навигация по дням
+    nav_row = []
+    if current_day > 0:
+        nav_row.append(InlineKeyboardButton(
+            text=f"← {DAY_NAMES[current_day - 1]}",
+            callback_data=f"wpd_{plan_id}_{current_day - 1}"
+        ))
+    nav_row.append(InlineKeyboardButton(
+        text=f"· {DAY_NAMES[current_day]} ·",
+        callback_data="_"
+    ))
+    if current_day < 6:
+        nav_row.append(InlineKeyboardButton(
+            text=f"{DAY_NAMES[current_day + 1]} →",
+            callback_data=f"wpd_{plan_id}_{current_day + 1}"
+        ))
+    keyboard.append(nav_row)
+
+    # Новый план
+    keyboard.append([InlineKeyboardButton(text="🔄 Новый план", callback_data="wpn")])
+
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
