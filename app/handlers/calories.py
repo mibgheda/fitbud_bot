@@ -5,7 +5,7 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func
 from datetime import datetime, timedelta
 
-from database.database import async_session, CalorieEntry, User
+from database.database import async_session, CalorieEntry, User, calc_today_start
 from keyboards.reply import get_meal_type_keyboard, get_main_menu, not_menu_button
 
 router = Router()
@@ -82,21 +82,21 @@ async def process_meal_type(callback: CallbackQuery, state: FSMContext):
         session.add(entry)
         await session.commit()
 
+        # Получаем данные пользователя для /new_day и целевой калорийности
+        user_result = await session.execute(
+            select(User).where(User.telegram_id == callback.from_user.id)
+        )
+        user = user_result.scalar_one_or_none()
+        today_start = calc_today_start(user.current_day_start if user else None)
+        target = user.daily_calorie_target if user and user.daily_calorie_target else 2000
+
         # Получаем статистику за сегодня
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         result = await session.execute(
             select(func.sum(CalorieEntry.calories))
             .where(CalorieEntry.user_id == callback.from_user.id)
             .where(CalorieEntry.created_at >= today_start)
         )
         total_today = result.scalar() or 0
-
-        # Получаем целевую калорийность
-        user_result = await session.execute(
-            select(User.daily_calorie_target)
-            .where(User.telegram_id == callback.from_user.id)
-        )
-        target = user_result.scalar() or 2000
 
     meal_emoji = {
         'breakfast': '🌅',

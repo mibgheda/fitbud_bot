@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Boolean, Text, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Boolean, Text, JSON, text
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -37,6 +37,7 @@ class User(Base):
     activity_level = Column(String(50))  # sedentary, light, moderate, active, very_active
     goal = Column(String(50))  # lose_weight, maintain, gain_weight
     daily_calorie_target = Column(Integer)
+    current_day_start = Column(DateTime)  # /new_day override
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -142,10 +143,22 @@ class AIInteraction(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+def calc_today_start(user_day_start=None):
+    """Начало текущего дня с учётом /new_day"""
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if user_day_start and user_day_start > midnight:
+        return user_day_start
+    return midnight
+
+
 async def init_db():
     """Инициализация базы данных"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Добавляем новые колонки для существующих таблиц
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS current_day_start TIMESTAMP"
+        ))
 
 
 async def get_session() -> AsyncSession:

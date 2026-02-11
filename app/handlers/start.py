@@ -3,15 +3,20 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from sqlalchemy import select
+from sqlalchemy import select, delete
+from datetime import datetime
 
-from database.database import async_session, User
+from database.database import (
+    async_session, User, CalorieEntry, WorkoutEntry, WeightLog,
+    HealthData, AIInteraction, calc_today_start,
+)
 from keyboards.reply import (
     get_main_menu,
     get_agreement_keyboard,
     get_gender_keyboard,
     get_activity_level_keyboard,
     get_goal_keyboard,
+    get_delete_confirm_keyboard,
     not_menu_button,
 )
 
@@ -340,8 +345,9 @@ async def cmd_help(message: Message, state: FSMContext):
     help_text = (
         "<b>📖 Справка FitBud</b>\n\n"
         "<b>Основные функции:</b>\n\n"
-        "📊 <b>Добавить калории</b> — записать прием пищи\n"
-        "🏃 <b>Добавить тренировку</b> — записать тренировку\n"
+        "✨ <b>Быстрый ввод</b> — AI-помощник для еды и тренировок\n"
+        "📊 <b>Добавить калории</b> — записать прием пищи вручную\n"
+        "🏃 <b>Добавить тренировку</b> — записать тренировку вручную\n"
         "📈 <b>Моя статистика</b> — посмотреть прогресс\n"
         "👤 <b>Мой профиль</b> — просмотр профиля\n"
         "⚖️ <b>Записать вес</b> — добавить измерение веса\n\n"
@@ -351,6 +357,93 @@ async def cmd_help(message: Message, state: FSMContext):
         "Отправь голосовое — AI распознает и запишет.\n\n"
         "<b>Команды:</b>\n"
         "/start — начать работу / перенастроить профиль\n"
-        "/help — показать эту справку"
+        "/help — показать эту справку\n"
+        "/new_day — начать новый день с нуля\n"
+        "/delete_account — удалить аккаунт и все данные\n\n"
+        "<b>Документы:</b>\n"
+        "📋 <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-dlya-Telegram-bota-FitBud-02-09\">Пользовательское соглашение</a>\n"
+        "🔒 <a href=\"https://telegra.ph/Politika-obrabotki-personalnyh-dannyh-v-ramkah-Telegram-bota-FitBud-02-09\">Политика обработки ПДн</a>\n\n"
+        "<i>Для удаления аккаунта и всех данных используй /delete_account</i>"
     )
-    await message.answer(help_text, reply_markup=get_main_menu())
+    await message.answer(help_text, reply_markup=get_main_menu(), disable_web_page_preview=True)
+
+
+# --- Новый день ---
+
+@router.message(Command("new_day"))
+async def cmd_new_day(message: Message, state: FSMContext):
+    """Начать новый день с 0"""
+    await state.clear()
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == message.from_user.id)
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            await message.answer("Сначала настрой профиль командой /start")
+            return
+
+        user.current_day_start = datetime.now()
+        await session.commit()
+
+        target = user.daily_calorie_target or 2000
+
+    await message.answer(
+        "🔄 <b>Новый день начат!</b>\n\n"
+        f"Калории: <b>0</b> / {target} ккал\n"
+        "Все счётчики обнулены.\n"
+        "Удачного дня! 💪",
+        reply_markup=get_main_menu()
+    )
+
+
+# --- Удаление аккаунта ---
+
+@router.message(Command("delete_account"))
+async def cmd_delete_account(message: Message, state: FSMContext):
+    """Запрос на удаление аккаунта"""
+    await state.clear()
+    await message.answer(
+        "⚠️ <b>Удаление аккаунта</b>\n\n"
+        "Ты уверен(а)? Это действие удалит:\n"
+        "• Профиль и настройки\n"
+        "• Все записи о питании\n"
+        "• Все записи о тренировках\n"
+        "• Историю веса\n"
+        "• Медицинские данные\n"
+        "• Историю AI-взаимодействий\n\n"
+        "<b>Это действие необратимо!</b>",
+        reply_markup=get_delete_confirm_keyboard()
+    )
+
+
+@router.callback_query(F.data == "confirm_delete_account")
+async def process_delete_account(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение удаления аккаунта"""
+    user_id = callback.from_user.id
+
+    async with async_session() as session:
+        await session.execute(delete(CalorieEntry).where(CalorieEntry.user_id == user_id))
+        await session.execute(delete(WorkoutEntry).where(WorkoutEntry.user_id == user_id))
+        await session.execute(delete(WeightLog).where(WeightLog.user_id == user_id))
+        await session.execute(delete(HealthData).where(HealthData.user_id == user_id))
+        await session.execute(delete(AIInteraction).where(AIInteraction.user_id == user_id))
+        await session.execute(delete(User).where(User.telegram_id == user_id))
+        await session.commit()
+
+    await callback.message.edit_text(
+        "✅ <b>Аккаунт удалён</b>\n\n"
+        "Все твои данные были удалены.\n"
+        "Чтобы начать заново, используй /start"
+    )
+    await state.clear()
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_delete_account")
+async def cancel_delete_account(callback: CallbackQuery, state: FSMContext):
+    """Отмена удаления аккаунта"""
+    await callback.message.edit_text("✅ Удаление отменено. Твои данные в безопасности!")
+    await callback.answer()

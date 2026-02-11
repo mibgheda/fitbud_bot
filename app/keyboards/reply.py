@@ -3,6 +3,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 
 # Тексты кнопок главного меню — используется для фильтрации в FSM-хэндлерах
 MENU_BUTTONS = [
+    "✨ Быстрый ввод",
     "📊 Добавить калории", "🏃 Добавить тренировку",
     "📈 Моя статистика", "👤 Мой профиль",
     "⚖️ Записать вес", "❓ Помощь"
@@ -24,6 +25,7 @@ def not_menu_button(message) -> bool:
 def get_main_menu():
     """Главное меню бота"""
     keyboard = [
+        [KeyboardButton(text="✨ Быстрый ввод")],
         [KeyboardButton(text="📊 Добавить калории"), KeyboardButton(text="🏃 Добавить тренировку")],
         [KeyboardButton(text="📈 Моя статистика"), KeyboardButton(text="👤 Мой профиль")],
         [KeyboardButton(text="⚖️ Записать вес"), KeyboardButton(text="❓ Помощь")]
@@ -107,4 +109,35 @@ def get_goal_keyboard():
 def get_cancel_keyboard():
     """Клавиатура с кнопкой отмены"""
     keyboard = [[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_ai_food_confirm_keyboard():
+    """Клавиатура подтверждения AI-распознанной еды"""
+    keyboard = [
+        [
+            InlineKeyboardButton(text="✅ Добавить", callback_data="ai_food_confirm"),
+            InlineKeyboardButton(text="✏️ Изменить", callback_data="ai_food_edit")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_ai_workout_confirm_keyboard():
+    """Клавиатура подтверждения AI-распознанной тренировки"""
+    keyboard = [
+        [
+            InlineKeyboardButton(text="✅ Добавить", callback_data="ai_workout_confirm"),
+            InlineKeyboardButton(text="✏️ Изменить", callback_data="ai_workout_edit")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_delete_confirm_keyboard():
+    """Клавиатура подтверждения удаления аккаунта"""
+    keyboard = [
+        [InlineKeyboardButton(text="🗑 Да, удалить все данные", callback_data="confirm_delete_account")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_delete_account")]
+    ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

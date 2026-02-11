@@ -5,7 +5,7 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func
 from datetime import datetime, timedelta
 
-from database.database import async_session, CalorieEntry, WorkoutEntry, WeightLog, User
+from database.database import async_session, CalorieEntry, WorkoutEntry, WeightLog, User, calc_today_start
 from keyboards.reply import get_main_menu, not_menu_button
 
 router = Router()
@@ -21,7 +21,12 @@ async def show_statistics(message: Message, state: FSMContext):
     """Показать статистику пользователя"""
     await state.clear()
     async with async_session() as session:
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        # Получаем данные пользователя для /new_day и целевой калорийности
+        user_result = await session.execute(
+            select(User).where(User.telegram_id == message.from_user.id)
+        )
+        user = user_result.scalar_one_or_none()
+        today_start = calc_today_start(user.current_day_start if user else None)
         week_ago = datetime.now() - timedelta(days=7)
         month_ago = datetime.now() - timedelta(days=30)
 
@@ -74,12 +79,8 @@ async def show_statistics(message: Message, state: FSMContext):
         workouts_month = workouts_month or 0
         duration_month = duration_month or 0
 
-        # Получаем целевую калорийность
-        user_data = await session.execute(
-            select(User.daily_calorie_target)
-            .where(User.telegram_id == message.from_user.id)
-        )
-        target = user_data.scalar() or 2000
+        # Целевая калорийность (уже получили user выше)
+        target = user.daily_calorie_target if user and user.daily_calorie_target else 2000
 
         # Прогресс по весу
         weight_logs = await session.execute(
