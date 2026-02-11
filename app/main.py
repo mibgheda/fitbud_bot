@@ -32,17 +32,19 @@ async def main():
     dp = Dispatcher()
     
     # Подключаем роутеры из handlers
+    # Порядок важен: конкретные хэндлеры (кнопки меню, FSM-состояния) — первыми,
+    # ai_hub (catch-all для текста) — последним, чтобы не перехватывать кнопки меню
     dp.include_router(start.router)
-    dp.include_router(ai_hub.router)  # AI Hub должен быть перед calories и fitness
     dp.include_router(calories.router)
     dp.include_router(fitness.router)
     dp.include_router(profile.router)
     dp.include_router(stats.router)
+    dp.include_router(ai_hub.router)
     
     # Инициализация базы данных
     await init_db()
     
-    logger.info("Бот запущен")
+    logger.info("Бот запущен v2 (ai_hub last, menu buttons fix)")
     
     try:
         # Запуск бота

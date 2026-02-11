@@ -21,6 +21,13 @@ from utils.openai_helper import (
 
 router = Router()
 
+# Кнопки главного меню — исключаем из обработки AI
+MENU_BUTTONS = [
+    "📊 Добавить калории", "🏃 Добавить тренировку",
+    "📈 Моя статистика", "👤 Мой профиль",
+    "⚖️ Записать вес", "❓ Помощь"
+]
+
 # Директория для хранения медиа-файлов
 MEDIA_DIR = "/app/media"
 os.makedirs(f"{MEDIA_DIR}/voice", exist_ok=True)
@@ -168,19 +175,9 @@ async def handle_photo_message(message: Message, state: FSMContext):
             os.remove(file_path)
 
 
-@router.message(F.text & ~F.text.startswith('/'))
+@router.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MENU_BUTTONS))
 async def handle_text_message(message: Message, state: FSMContext):
     """Обработка текстовых сообщений (умный анализ)"""
-    
-    # Игнорируем кнопки меню
-    menu_buttons = [
-        "📊 Добавить калории", "🏃 Добавить тренировку",
-        "📈 Моя статистика", "👤 Мой профиль",
-        "⚖️ Записать вес", "❓ Помощь"
-    ]
-    if message.text in menu_buttons:
-        return
-    
     text = message.text.strip()
     
     # Определяем тип сообщения
