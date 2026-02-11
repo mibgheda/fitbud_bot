@@ -44,7 +44,7 @@ async def main():
     # Инициализация базы данных
     await init_db()
     
-    logger.info("Бот запущен v3 (onboarding + FSM menu fix)")
+    logger.info("Бот запущен v4 (existing users auto-calc fix)")
     
     try:
         # Запуск бота

@@ -30,6 +30,27 @@ class ProfileSetup(StatesGroup):
     waiting_for_goal = State()
 
 
+def calculate_calories(gender: str, weight: float, height: int, age: int,
+                       activity_level: str = 'moderate', goal: str = 'maintain'):
+    """Расчёт BMR, TDEE и суточной нормы калорий по формуле Миффлина-Сан Жеора"""
+    if gender == 'male':
+        bmr = 10 * weight + 6.25 * height - 5 * age + 5
+    else:
+        bmr = 10 * weight + 6.25 * height - 5 * age - 161
+
+    activity_multipliers = {
+        'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55,
+        'active': 1.725, 'very_active': 1.9
+    }
+    tdee = bmr * activity_multipliers.get(activity_level, 1.55)
+
+    if goal == 'lose_weight':
+        return int(tdee - 500)
+    elif goal == 'gain_weight':
+        return int(tdee + 300)
+    return int(tdee)
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     """Обработчик команды /start"""
@@ -49,7 +70,28 @@ async def cmd_start(message: Message, state: FSMContext):
                 "Используй меню ниже для управления:",
                 reply_markup=get_main_menu()
             )
+        elif user and user.age and user.height and user.weight and user.gender:
+            # Есть данные профиля из предыдущей версии — дорассчитываем калории
+            if not user.activity_level:
+                user.activity_level = 'moderate'
+            if not user.goal:
+                user.goal = 'maintain'
+            user.daily_calorie_target = calculate_calories(
+                user.gender, user.weight, user.height, user.age,
+                user.activity_level, user.goal
+            )
+            await session.commit()
+
+            name = user.full_name or message.from_user.first_name
+            await message.answer(
+                f"С возвращением, {name}! 👋\n\n"
+                f"Я обновил твой профиль.\n"
+                f"Твоя суточная норма: <b>{user.daily_calorie_target} ккал/день</b>\n\n"
+                "Используй меню ниже для управления:",
+                reply_markup=get_main_menu()
+            )
         else:
+            # Новый пользователь — онбординг
             if not user:
                 new_user = User(
                     telegram_id=message.from_user.id,
@@ -204,30 +246,21 @@ async def process_goal(callback: CallbackQuery, state: FSMContext):
     goal = callback.data.split("_", 1)[1]
     data = await state.get_data()
 
-    # Формула Миффлина-Сан Жеора для BMR
+    daily_calories = calculate_calories(
+        data['gender'], data['weight'], data['height'], data['age'],
+        data['activity_level'], goal
+    )
+
+    # BMR/TDEE для отображения
     if data['gender'] == 'male':
         bmr = 10 * data['weight'] + 6.25 * data['height'] - 5 * data['age'] + 5
     else:
         bmr = 10 * data['weight'] + 6.25 * data['height'] - 5 * data['age'] - 161
-
-    # Коэффициенты активности
     activity_multipliers = {
-        'sedentary': 1.2,
-        'light': 1.375,
-        'moderate': 1.55,
-        'active': 1.725,
-        'very_active': 1.9
+        'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55,
+        'active': 1.725, 'very_active': 1.9
     }
-
     tdee = bmr * activity_multipliers[data['activity_level']]
-
-    # Корректировка по цели
-    if goal == 'lose_weight':
-        daily_calories = int(tdee - 500)
-    elif goal == 'gain_weight':
-        daily_calories = int(tdee + 300)
-    else:
-        daily_calories = int(tdee)
 
     # Расчёт БЖУ (процент от калорий)
     if goal == 'lose_weight':
