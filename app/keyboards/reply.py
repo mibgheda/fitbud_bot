@@ -1,6 +1,26 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 
+# Тексты кнопок главного меню — используется для фильтрации в FSM-хэндлерах
+MENU_BUTTONS = [
+    "📊 Добавить калории", "🏃 Добавить тренировку",
+    "📈 Моя статистика", "👤 Мой профиль",
+    "⚖️ Записать вес", "❓ Помощь"
+]
+
+
+def is_menu_button(message) -> bool:
+    """Фильтр: сообщение является кнопкой меню"""
+    return message.text in MENU_BUTTONS if message.text else False
+
+
+def not_menu_button(message) -> bool:
+    """Фильтр: сообщение является текстовым И НЕ является кнопкой меню"""
+    if not message.text:
+        return False
+    return message.text not in MENU_BUTTONS
+
+
 def get_main_menu():
     """Главное меню бота"""
     keyboard = [
@@ -9,6 +29,22 @@ def get_main_menu():
         [KeyboardButton(text="⚖️ Записать вес"), KeyboardButton(text="❓ Помощь")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+def get_agreement_keyboard():
+    """Клавиатура принятия пользовательского соглашения и политики ПДн"""
+    keyboard = [
+        [InlineKeyboardButton(
+            text="📋 Пользовательское соглашение",
+            url="https://telegra.ph/Polzovatelskoe-soglashenie-dlya-Telegram-bota-FitBud-02-09"
+        )],
+        [InlineKeyboardButton(
+            text="🔒 Политика обработки ПДн",
+            url="https://telegra.ph/Politika-obrabotki-personalnyh-dannyh-v-ramkah-Telegram-bota-FitBud-02-09"
+        )],
+        [InlineKeyboardButton(text="✅ Я принимаю условия", callback_data="accept_agreement")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def get_meal_type_keyboard():
@@ -49,11 +85,11 @@ def get_gender_keyboard():
 def get_activity_level_keyboard():
     """Клавиатура выбора уровня активности"""
     keyboard = [
-        [InlineKeyboardButton(text="🛋 Сидячий образ жизни", callback_data="activity_sedentary")],
-        [InlineKeyboardButton(text="🚶 Легкая активность (1-3 раза/нед)", callback_data="activity_light")],
-        [InlineKeyboardButton(text="🏃 Умеренная активность (3-5 раз/нед)", callback_data="activity_moderate")],
-        [InlineKeyboardButton(text="💪 Активный образ (6-7 раз/нед)", callback_data="activity_active")],
-        [InlineKeyboardButton(text="🏆 Очень активный (спортсмен)", callback_data="activity_very_active")]
+        [InlineKeyboardButton(text="🛋 Минимальный (сидячий образ жизни)", callback_data="activity_sedentary")],
+        [InlineKeyboardButton(text="🚶 Легкий (1-3 раза/нед)", callback_data="activity_light")],
+        [InlineKeyboardButton(text="🏃 Средний (3-5 раз/нед)", callback_data="activity_moderate")],
+        [InlineKeyboardButton(text="💪 Высокий (6-7 раз/нед)", callback_data="activity_active")],
+        [InlineKeyboardButton(text="🏆 Экстремальный (спортсмен)", callback_data="activity_very_active")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -61,9 +97,9 @@ def get_activity_level_keyboard():
 def get_goal_keyboard():
     """Клавиатура выбора цели"""
     keyboard = [
-        [InlineKeyboardButton(text="📉 Похудеть", callback_data="goal_lose_weight")],
-        [InlineKeyboardButton(text="➡️ Поддерживать вес", callback_data="goal_maintain")],
-        [InlineKeyboardButton(text="📈 Набрать массу", callback_data="goal_gain_weight")]
+        [InlineKeyboardButton(text="➡️ Поддержание веса", callback_data="goal_maintain")],
+        [InlineKeyboardButton(text="📉 Похудение", callback_data="goal_lose_weight")],
+        [InlineKeyboardButton(text="📈 Набор массы", callback_data="goal_gain_weight")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

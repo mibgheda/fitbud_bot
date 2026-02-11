@@ -10,7 +10,7 @@ import os
 import aiofiles
 
 from database.database import async_session, User, CalorieEntry, WorkoutEntry, AIInteraction
-from keyboards.reply import get_main_menu
+from keyboards.reply import get_main_menu, MENU_BUTTONS
 from utils.openai_helper import (
     transcribe_voice,
     analyze_food_from_text,
@@ -20,13 +20,6 @@ from utils.openai_helper import (
 )
 
 router = Router()
-
-# Кнопки главного меню — исключаем из обработки AI
-MENU_BUTTONS = [
-    "📊 Добавить калории", "🏃 Добавить тренировку",
-    "📈 Моя статистика", "👤 Мой профиль",
-    "⚖️ Записать вес", "❓ Помощь"
-]
 
 # Директория для хранения медиа-файлов
 MEDIA_DIR = "/app/media"

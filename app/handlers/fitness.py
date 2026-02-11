@@ -3,10 +3,10 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from database.database import async_session, WorkoutEntry
-from keyboards.reply import get_workout_type_keyboard, get_main_menu
+from keyboards.reply import get_workout_type_keyboard, get_main_menu, not_menu_button
 
 router = Router()
 
@@ -32,6 +32,7 @@ CALORIES_PER_30MIN = {
 @router.message(F.text == "🏃 Добавить тренировку")
 async def start_add_workout(message: Message, state: FSMContext):
     """Начало процесса добавления тренировки"""
+    await state.clear()
     await message.answer(
         "Какой тип тренировки?",
         reply_markup=get_workout_type_keyboard()
@@ -43,7 +44,7 @@ async def start_add_workout(message: Message, state: FSMContext):
 async def process_workout_type(callback: CallbackQuery, state: FSMContext):
     """Обработка типа тренировки"""
     workout_type = callback.data.split("_")[1]
-    
+
     if workout_type == "other":
         await callback.message.edit_text(
             "Напиши название тренировки:"
@@ -62,33 +63,33 @@ async def process_workout_type(callback: CallbackQuery, state: FSMContext):
             f"Отлично! <b>{workout_names[workout_type]}</b>\n\n"
             "Сколько минут тренировался? (введи число)"
         )
-    
+
     await state.set_state(AddWorkout.waiting_for_duration)
     await callback.answer()
 
 
-@router.message(AddWorkout.waiting_for_duration)
+@router.message(AddWorkout.waiting_for_duration, not_menu_button)
 async def process_duration(message: Message, state: FSMContext):
     """Обработка продолжительности тренировки"""
     data = await state.get_data()
-    
+
     # Если это кастомная тренировка и мы еще не получили название
     if data.get('custom_name') and 'workout_name' not in data:
         await state.update_data(workout_name=message.text.strip())
         await message.answer("Сколько минут тренировался? (введи число)")
         return
-    
+
     try:
         duration = int(message.text)
         if duration < 1 or duration > 600:
             await message.answer("Пожалуйста, введи корректную длительность (от 1 до 600 минут)")
             return
-        
+
         # Рассчитываем примерное количество сожженных калорий
         workout_type = data['workout_type']
         calories_per_30 = CALORIES_PER_30MIN.get(workout_type, 150)
         calories_burned = int((duration / 30) * calories_per_30)
-        
+
         await state.update_data(duration=duration, calories_burned=calories_burned)
         await message.answer(
             f"Хочешь добавить заметки о тренировке?\n\n"
@@ -100,12 +101,12 @@ async def process_duration(message: Message, state: FSMContext):
         await message.answer("Пожалуйста, введи длительность числом")
 
 
-@router.message(AddWorkout.waiting_for_notes)
+@router.message(AddWorkout.waiting_for_notes, not_menu_button)
 async def process_notes(message: Message, state: FSMContext):
     """Сохранение тренировки"""
     data = await state.get_data()
     notes = None if message.text.strip() == "-" else message.text.strip()
-    
+
     # Сохраняем в БД
     async with async_session() as session:
         entry = WorkoutEntry(
@@ -117,7 +118,7 @@ async def process_notes(message: Message, state: FSMContext):
         )
         session.add(entry)
         await session.commit()
-        
+
         # Получаем статистику за неделю
         week_ago = datetime.now() - timedelta(days=7)
         result = await session.execute(
@@ -133,29 +134,26 @@ async def process_notes(message: Message, state: FSMContext):
         week_count = week_count or 0
         week_duration = week_duration or 0
         week_calories = week_calories or 0
-    
+
     response = (
         f"✅ Тренировка добавлена!\n\n"
         f"🏃 <b>{data['workout_name']}</b>\n"
         f"⏱ Длительность: <b>{data['duration']}</b> мин\n"
         f"🔥 Сожжено калорий: <b>~{data['calories_burned']}</b> ккал\n"
     )
-    
+
     if notes:
         response += f"📝 Заметки: <i>{notes}</i>\n"
-    
+
     response += (
         f"\n📊 <b>За последние 7 дней:</b>\n"
         f"Тренировок: <b>{week_count}</b>\n"
         f"Время: <b>{week_duration}</b> мин\n"
         f"Сожжено: <b>~{week_calories}</b> ккал"
     )
-    
+
     await message.answer(response, reply_markup=get_main_menu())
     await state.clear()
-
-
-from datetime import timedelta
 
 
 @router.callback_query(F.data == "cancel")
