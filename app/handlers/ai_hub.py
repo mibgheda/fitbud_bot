@@ -539,7 +539,7 @@ async def handle_voice_message(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(
             f"❌ Ошибка обработки голосового сообщения: {str(e)}\n\n"
-            "Попробуйте еще раз или используйте текст."
+            "Попробуй ещё раз или используй текст."
         )
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
@@ -568,7 +568,7 @@ async def handle_photo_message(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(
             f"❌ Ошибка анализа фото: {str(e)}\n\n"
-            "Попробуйте сфотографировать еду с другого ракурса."
+            "Попробуй сфотографировать еду с другого ракурса."
         )
         if file_path and os.path.exists(file_path):
             os.remove(file_path)

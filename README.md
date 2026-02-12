@@ -179,4 +179,4 @@ MIT License
 
 ## Контакты
 
-По вопросам и предложениям: [ваш email или Telegram]
+По вопросам и предложениям: fitness_buddy@mail.ru

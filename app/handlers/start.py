@@ -5,6 +5,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, delete
 from datetime import datetime
+import asyncio
+import os
+import logging
 
 from database.database import (
     async_session, User, CalorieEntry, WorkoutEntry, WeightLog,
@@ -452,3 +455,54 @@ async def cancel_delete_account(callback: CallbackQuery, state: FSMContext):
     """Отмена удаления аккаунта"""
     await callback.message.edit_text("✅ Удаление отменено. Твои данные в безопасности!")
     await callback.answer()
+
+
+# --- Рассылка (только для админа) ---
+
+logger = logging.getLogger(__name__)
+ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message, state: FSMContext):
+    """Рассылка сообщения всем пользователям (только для админа)"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    text = message.text.removeprefix("/broadcast").strip()
+    if not text:
+        await message.answer(
+            "Использование:\n"
+            "<code>/broadcast Текст сообщения</code>\n\n"
+            "Поддерживается HTML-разметка."
+        )
+        return
+
+    # Получаем всех пользователей
+    async with async_session() as session:
+        result = await session.execute(select(User.telegram_id))
+        user_ids = [row[0] for row in result.all()]
+
+    total = len(user_ids)
+    sent = 0
+    failed = 0
+
+    status_msg = await message.answer(f"📤 Начинаю рассылку {total} пользователям...")
+
+    for user_id in user_ids:
+        try:
+            await message.bot.send_message(user_id, text)
+            sent += 1
+        except Exception as e:
+            failed += 1
+            logger.warning(f"Broadcast failed for {user_id}: {e}")
+
+        # Задержка для соблюдения лимитов Telegram (30 msg/sec)
+        if (sent + failed) % 25 == 0:
+            await asyncio.sleep(1)
+
+    await status_msg.edit_text(
+        f"✅ <b>Рассылка завершена</b>\n\n"
+        f"Отправлено: <b>{sent}</b> / {total}\n"
+        f"Не доставлено: <b>{failed}</b>"
+    )
