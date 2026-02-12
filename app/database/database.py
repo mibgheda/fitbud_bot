@@ -143,6 +143,70 @@ class AIInteraction(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MealPlan(Base):
+    """Недельный план питания"""
+    __tablename__ = 'meal_plans'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, nullable=False)
+    week_start = Column(DateTime, nullable=False)
+    is_active = Column(Boolean, default=True)
+    ai_response = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MealPlanItem(Base):
+    """Элемент плана питания (одно блюдо)"""
+    __tablename__ = 'meal_plan_items'
+
+    id = Column(Integer, primary_key=True)
+    plan_id = Column(Integer, nullable=False)
+    user_id = Column(BigInteger, nullable=False)
+    day_of_week = Column(Integer, nullable=False)  # 0=Пн, 6=Вс
+    meal_type = Column(String(20), nullable=False)  # breakfast, lunch, dinner, snack
+    food_name = Column(String(500), nullable=False)
+    recipe = Column(Text)
+    ingredients = Column(Text)
+    calories = Column(Integer, default=0)
+    protein = Column(Float, default=0)
+    fats = Column(Float, default=0)
+    carbs = Column(Float, default=0)
+    is_completed = Column(Boolean, default=False)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkoutPlan(Base):
+    """Недельный план тренировок"""
+    __tablename__ = 'workout_plans'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, nullable=False)
+    week_start = Column(DateTime, nullable=False)
+    is_active = Column(Boolean, default=True)
+    ai_response = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkoutPlanItem(Base):
+    """Элемент плана тренировок (одна тренировка на день)"""
+    __tablename__ = 'workout_plan_items'
+
+    id = Column(Integer, primary_key=True)
+    plan_id = Column(Integer, nullable=False)
+    user_id = Column(BigInteger, nullable=False)
+    day_of_week = Column(Integer, nullable=False)  # 0=Пн, 6=Вс
+    workout_type = Column(String(100), nullable=False)
+    exercises = Column(JSON)  # [{name, sets, reps, rest}, ...]
+    duration = Column(Integer, default=0)
+    calories_burned = Column(Integer, default=0)
+    notes = Column(Text)
+    is_rest_day = Column(Boolean, default=False)
+    is_completed = Column(Boolean, default=False)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 def calc_today_start(user_day_start=None):
     """Начало текущего дня с учётом /new_day"""
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)

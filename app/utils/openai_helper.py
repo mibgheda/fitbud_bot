@@ -224,6 +224,194 @@ async def analyze_workout_from_text(text: str) -> Dict[str, Any]:
         raise Exception(f"Ошибка анализа тренировки: {str(e)}")
 
 
+async def generate_meal_plan(user_context: Dict, recent_stats: Optional[Dict] = None) -> Dict[str, Any]:
+    """
+    Генерация недельного плана питания
+
+    Returns:
+        Dict с планом на 7 дней, каждый день содержит breakfast/lunch/dinner/snack
+    """
+    stats_info = ""
+    if recent_stats:
+        stats_info = f"""
+Статистика за последнюю неделю:
+- Среднее потребление калорий: {recent_stats.get('avg_calories', '?')} ккал/день
+- Средние БЖУ: Б:{recent_stats.get('avg_protein', '?')}г Ж:{recent_stats.get('avg_fats', '?')}г У:{recent_stats.get('avg_carbs', '?')}г
+"""
+
+    goal_desc = {
+        'lose_weight': 'похудение (дефицит калорий, высокий белок)',
+        'maintain': 'поддержание веса (сбалансированное питание)',
+        'gain_weight': 'набор массы (профицит калорий, высокий белок и углеводы)'
+    }
+    gender_desc = {'male': 'мужской', 'female': 'женский'}
+
+    prompt = f"""Составь детальный план питания на 7 дней (Пн-Вс).
+
+Профиль:
+- Пол: {gender_desc.get(user_context.get('gender', ''), 'не указан')}
+- Возраст: {user_context.get('age', '?')} лет
+- Вес: {user_context.get('weight', '?')} кг, Рост: {user_context.get('height', '?')} см
+- Цель: {goal_desc.get(user_context.get('goal', 'maintain'), 'поддержание')}
+- Дневная норма: {user_context.get('daily_target', 2000)} ккал
+- Уровень активности: {user_context.get('activity_level', 'moderate')}
+{stats_info}
+
+Верни ТОЛЬКО JSON:
+{{
+  "days": [
+    {{
+      "day": 0,
+      "meals": [
+        {{
+          "meal_type": "breakfast",
+          "food_name": "Название блюда",
+          "calories": 350,
+          "protein": 15.0,
+          "fats": 10.0,
+          "carbs": 45.0,
+          "ingredients": "Ингредиенты с граммовками через запятую",
+          "recipe": "Пошаговый рецепт приготовления"
+        }},
+        {{"meal_type": "lunch", ...}},
+        {{"meal_type": "dinner", ...}},
+        {{"meal_type": "snack", ...}}
+      ]
+    }},
+    ...ещё 6 дней (day: 1-6)
+  ]
+}}
+
+Правила:
+- Каждый день: завтрак + обед + ужин + перекус
+- Суммарные калории дня = {user_context.get('daily_target', 2000)} ± 50 ккал
+- Блюда разнообразные, доступные, из обычных продуктов
+- Рецепты простые и понятные, с указанием времени приготовления
+- Ингредиенты с точными граммовками
+- БЖУ реалистичны для каждого блюда
+- Учитывай цель пользователя при распределении макронутриентов"""
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Ты профессиональный диетолог-нутрициолог. Составляешь персональные планы питания. Отвечаешь ТОЛЬКО валидным JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            response_format={"type": "json_object"}
+        )
+
+        import json
+        result = json.loads(response.choices[0].message.content)
+        return result
+
+    except Exception as e:
+        raise Exception(f"Ошибка генерации плана питания: {str(e)}")
+
+
+async def generate_workout_plan(user_context: Dict, recent_stats: Optional[Dict] = None) -> Dict[str, Any]:
+    """
+    Генерация недельного плана тренировок
+
+    Returns:
+        Dict с планом на 7 дней
+    """
+    stats_info = ""
+    if recent_stats:
+        stats_info = f"""
+Статистика за последнюю неделю:
+- Тренировок: {recent_stats.get('workout_count', 0)}
+- Общее время: {recent_stats.get('total_duration', 0)} мин
+- Сожжено калорий: {recent_stats.get('total_burned', 0)} ккал
+- Типы тренировок: {recent_stats.get('workout_types', 'нет данных')}
+"""
+
+    goal_desc = {
+        'lose_weight': 'похудение (кардио + силовые, жиросжигание)',
+        'maintain': 'поддержание формы (баланс кардио и силовых)',
+        'gain_weight': 'набор мышечной массы (силовые, прогрессивная нагрузка)'
+    }
+    activity_desc = {
+        'sedentary': 'начинающий (минимальная подготовка)',
+        'light': 'лёгкий уровень (1-3 раза в неделю)',
+        'moderate': 'средний уровень (3-5 раз в неделю)',
+        'active': 'продвинутый (6-7 раз в неделю)',
+        'very_active': 'спортсмен (интенсивные ежедневные тренировки)'
+    }
+    gender_desc = {'male': 'мужской', 'female': 'женский'}
+
+    prompt = f"""Составь план тренировок на 7 дней (Пн-Вс).
+
+Профиль:
+- Пол: {gender_desc.get(user_context.get('gender', ''), 'не указан')}
+- Возраст: {user_context.get('age', '?')} лет
+- Вес: {user_context.get('weight', '?')} кг
+- Подготовка: {activity_desc.get(user_context.get('activity_level', 'moderate'), 'средняя')}
+- Цель: {goal_desc.get(user_context.get('goal', 'maintain'), 'поддержание')}
+{stats_info}
+
+Верни ТОЛЬКО JSON:
+{{
+  "days": [
+    {{
+      "day": 0,
+      "is_rest_day": false,
+      "workout_type": "Название тренировки (например: Грудь + Трицепс)",
+      "duration": 50,
+      "calories_burned": 350,
+      "exercises": [
+        {{
+          "name": "Жим штанги лёжа",
+          "sets": 4,
+          "reps": "8-10",
+          "rest": "90 сек",
+          "notes": "Средний вес, контроль техники"
+        }}
+      ],
+      "notes": "Разминка 5 мин, заминка 5 мин"
+    }},
+    {{
+      "day": 1,
+      "is_rest_day": true,
+      "workout_type": "День отдыха",
+      "duration": 0,
+      "calories_burned": 0,
+      "exercises": [],
+      "notes": "Лёгкая прогулка 20 мин, растяжка"
+    }},
+    ...ещё 5 дней (day: 2-6)
+  ]
+}}
+
+Правила:
+- 3-5 тренировочных дней, 2-4 дня отдыха (в зависимости от уровня)
+- Для каждой тренировки: 4-8 упражнений с подходами и повторениями
+- Указывай время отдыха между подходами
+- Калории считай для веса {user_context.get('weight', 70)} кг
+- Учитывай цель: похудение → больше кардио, набор → больше силовых
+- Дни отдыха с рекомендациями по восстановлению
+- Прогрессивная структура внутри недели"""
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Ты профессиональный фитнес-тренер. Составляешь персональные программы тренировок. Отвечаешь ТОЛЬКО валидным JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            response_format={"type": "json_object"}
+        )
+
+        import json
+        result = json.loads(response.choices[0].message.content)
+        return result
+
+    except Exception as e:
+        raise Exception(f"Ошибка генерации плана тренировок: {str(e)}")
+
+
 async def get_smart_recommendation(user_data: Dict, query: str) -> str:
     """
     Получение персональных рекомендаций на основе данных пользователя

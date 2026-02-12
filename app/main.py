@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import os
 
 from database.database import init_db
-from handlers import start, calories, fitness, profile, stats, ai_hub
+from handlers import start, calories, fitness, profile, stats, plans, ai_hub
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -39,12 +39,13 @@ async def main():
     dp.include_router(fitness.router)
     dp.include_router(profile.router)
     dp.include_router(stats.router)
+    dp.include_router(plans.router)
     dp.include_router(ai_hub.router)
     
     # Инициализация базы данных
     await init_db()
     
-    logger.info("Бот запущен v6 (no manual buttons, validation, extended keywords, no consultation)")
+    logger.info("Бот запущен v7 (meal plan, workout plan)")
     
     try:
         # Запуск бота
