@@ -12,7 +12,7 @@ import logging
 from database.database import (
     async_session, User, CalorieEntry, WorkoutEntry, WeightLog,
     HealthData, AIInteraction, MealPlan, MealPlanItem,
-    WorkoutPlan, WorkoutPlanItem, calc_today_start,
+    WorkoutPlan, WorkoutPlanItem, calc_today_start, ScheduledPost,
 )
 from keyboards.reply import (
     get_main_menu,
@@ -506,3 +506,102 @@ async def cmd_broadcast(message: Message, state: FSMContext):
         f"Отправлено: <b>{sent}</b> / {total}\n"
         f"Не доставлено: <b>{failed}</b>"
     )
+
+
+# --- Запланированные посты (только для админа) ---
+
+@router.message(Command("schedule_post"))
+async def cmd_schedule_post(message: Message):
+    """Запланировать пост: /schedule_post YYYY-MM-DD HH:MM Текст"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.removeprefix("/schedule_post").strip().split(" ", 2)
+    if len(parts) < 3:
+        await message.answer(
+            "Использование:\n"
+            "<code>/schedule_post YYYY-MM-DD HH:MM Текст сообщения</code>\n\n"
+            "Пример:\n"
+            "<code>/schedule_post 2024-12-31 18:00 С Новым Годом!</code>\n\n"
+            "Время задаётся в UTC."
+        )
+        return
+
+    date_str, time_str, text = parts[0], parts[1], parts[2]
+    try:
+        scheduled_at = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        await message.answer("Неверный формат даты/времени. Используй: <code>YYYY-MM-DD HH:MM</code>")
+        return
+
+    if scheduled_at <= datetime.utcnow():
+        await message.answer("Дата публикации уже прошла. Укажи время в будущем (UTC).")
+        return
+
+    async with async_session() as session:
+        post = ScheduledPost(
+            text=text,
+            scheduled_at=scheduled_at,
+            created_by=message.from_user.id,
+        )
+        session.add(post)
+        await session.commit()
+        await session.refresh(post)
+
+    await message.answer(
+        f"✅ Пост #{post.id} запланирован на <b>{scheduled_at.strftime('%Y-%m-%d %H:%M')} UTC</b>\n\n"
+        f"Текст:\n{text}"
+    )
+
+
+@router.message(Command("list_scheduled"))
+async def cmd_list_scheduled(message: Message):
+    """Список запланированных (неотправленных) постов"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(ScheduledPost)
+            .where(ScheduledPost.is_sent == False)  # noqa: E712
+            .order_by(ScheduledPost.scheduled_at)
+        )
+        posts = result.scalars().all()
+
+    if not posts:
+        await message.answer("Нет запланированных постов.")
+        return
+
+    lines = ["<b>Запланированные посты:</b>\n"]
+    for p in posts:
+        lines.append(
+            f"#{p.id} — {p.scheduled_at.strftime('%Y-%m-%d %H:%M')} UTC\n"
+            f"{p.text[:100]}{'...' if len(p.text) > 100 else ''}\n"
+        )
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("cancel_scheduled"))
+async def cmd_cancel_scheduled(message: Message):
+    """Отменить запланированный пост: /cancel_scheduled <id>"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    arg = message.text.removeprefix("/cancel_scheduled").strip()
+    if not arg.isdigit():
+        await message.answer("Использование: <code>/cancel_scheduled &lt;id&gt;</code>")
+        return
+
+    post_id = int(arg)
+    async with async_session() as session:
+        result = await session.execute(
+            select(ScheduledPost).where(ScheduledPost.id == post_id, ScheduledPost.is_sent == False)  # noqa: E712
+        )
+        post = result.scalar_one_or_none()
+        if not post:
+            await message.answer(f"Пост #{post_id} не найден или уже отправлен.")
+            return
+        await session.delete(post)
+        await session.commit()
+
+    await message.answer(f"🗑 Пост #{post_id} отменён.")

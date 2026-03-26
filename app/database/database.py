@@ -207,6 +207,19 @@ class WorkoutPlanItem(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ScheduledPost(Base):
+    """Запланированный пост для рассылки всем пользователям"""
+    __tablename__ = 'scheduled_posts'
+
+    id = Column(Integer, primary_key=True)
+    text = Column(Text, nullable=False)
+    scheduled_at = Column(DateTime, nullable=False)  # UTC время публикации
+    is_sent = Column(Boolean, default=False)
+    sent_at = Column(DateTime)
+    created_by = Column(BigInteger)  # telegram_id админа
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 def calc_today_start(user_day_start=None):
     """Начало текущего дня с учётом /new_day"""
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
