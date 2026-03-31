@@ -18,16 +18,6 @@ class AddCalories(StatesGroup):
     waiting_for_meal_type = State()
 
 
-@router.message(F.text == "📊 Добавить калории")
-async def start_add_calories(message: Message, state: FSMContext):
-    """Начало процесса добавления калорий"""
-    await state.clear()
-    await message.answer(
-        "Что ты съел(а)? Напиши название блюда или продукта.\n\n"
-        "Например: <i>Овсяная каша с бананом</i>"
-    )
-    await state.set_state(AddCalories.waiting_for_food_name)
-
 
 @router.message(AddCalories.waiting_for_food_name, not_menu_button)
 async def process_food_name(message: Message, state: FSMContext):

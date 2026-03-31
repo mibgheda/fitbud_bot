@@ -4,11 +4,12 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, delete
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import os
 import logging
 
+from sqlalchemy import func as sa_func
 from database.database import (
     async_session, User, CalorieEntry, WorkoutEntry, WeightLog,
     HealthData, AIInteraction, MealPlan, MealPlanItem,
@@ -506,3 +507,142 @@ async def cmd_broadcast(message: Message, state: FSMContext):
         f"Отправлено: <b>{sent}</b> / {total}\n"
         f"Не доставлено: <b>{failed}</b>"
     )
+
+
+# --- Баланс токенов (только для админа) ---
+
+@router.message(Command("balance"))
+async def cmd_balance(message: Message, state: FSMContext):
+    """Показать расход токенов OpenAI"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    week_ago = datetime.now() - timedelta(days=7)
+
+    async with async_session() as session:
+        # Общая статистика по токенам, сгруппированная по модели
+        model_stats = await session.execute(
+            select(
+                AIInteraction.ai_model,
+                sa_func.count(AIInteraction.id),
+                sa_func.sum(AIInteraction.prompt_tokens),
+                sa_func.sum(AIInteraction.completion_tokens),
+                sa_func.sum(AIInteraction.total_tokens),
+            )
+            .group_by(AIInteraction.ai_model)
+        )
+        models = model_stats.all()
+
+        # Запросов за сегодня
+        today_count = await session.execute(
+            select(sa_func.count(AIInteraction.id))
+            .where(AIInteraction.created_at >= today_start)
+        )
+        today_total = today_count.scalar() or 0
+
+        # Запросов за неделю
+        week_count = await session.execute(
+            select(sa_func.count(AIInteraction.id))
+            .where(AIInteraction.created_at >= week_ago)
+        )
+        week_total = week_count.scalar() or 0
+
+        # Всего запросов
+        all_count = await session.execute(
+            select(sa_func.count(AIInteraction.id))
+        )
+        all_total = all_count.scalar() or 0
+
+    # Приблизительные цены за 1M токенов
+    PRICES = {
+        'gpt-4o-mini': {'input': 0.15, 'output': 0.60},
+        'gpt-4o': {'input': 2.50, 'output': 10.00},
+        'whisper-1': {'input': 0, 'output': 0},
+    }
+
+    text = (
+        "💰 <b>Расход токенов OpenAI</b>\n\n"
+        f"📊 Запросов: сегодня <b>{today_total}</b> | "
+        f"за неделю <b>{week_total}</b> | всего <b>{all_total}</b>\n\n"
+    )
+
+    grand_prompt = grand_completion = grand_total = 0
+    estimated_cost = 0.0
+
+    for model, count, prompt_tk, compl_tk, total_tk in models:
+        prompt_tk = prompt_tk or 0
+        compl_tk = compl_tk or 0
+        total_tk = total_tk or 0
+        grand_prompt += prompt_tk
+        grand_completion += compl_tk
+        grand_total += total_tk
+
+        prices = PRICES.get(model or '', {'input': 0, 'output': 0})
+        cost = (prompt_tk / 1_000_000 * prices['input'] +
+                compl_tk / 1_000_000 * prices['output'])
+        estimated_cost += cost
+
+        text += (
+            f"<b>{model or '?'}</b>: {count} запросов\n"
+            f"  prompt: {prompt_tk:,} | completion: {compl_tk:,}\n"
+            f"  ~${cost:.4f}\n\n"
+        )
+
+    text += (
+        f"<b>Итого токенов:</b> {grand_total:,}\n"
+        f"<b>Примерная стоимость:</b> ~${estimated_cost:.4f}\n\n"
+        "<i>Цены приблизительные (gpt-4o-mini: $0.15/$0.60, gpt-4o: $2.50/$10.00 за 1M токенов)</i>"
+    )
+
+    await message.answer(text)
+
+
+# --- Статистика пользователей (только для админа) ---
+
+@router.message(Command("users"))
+async def cmd_users(message: Message, state: FSMContext):
+    """Показать статистику пользователей"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    week_ago = datetime.now() - timedelta(days=7)
+
+    async with async_session() as session:
+        # Всего зарегистрированных
+        total_result = await session.execute(
+            select(sa_func.count(User.id))
+        )
+        total_users = total_result.scalar() or 0
+
+        # Активных за неделю (есть last_active_at >= week_ago)
+        active_result = await session.execute(
+            select(sa_func.count(User.id))
+            .where(User.last_active_at >= week_ago)
+        )
+        active_users = active_result.scalar() or 0
+
+        # С заполненным профилем
+        profile_result = await session.execute(
+            select(sa_func.count(User.id))
+            .where(User.daily_calorie_target.isnot(None))
+        )
+        profile_users = profile_result.scalar() or 0
+
+        # Новых за неделю
+        new_result = await session.execute(
+            select(sa_func.count(User.id))
+            .where(User.created_at >= week_ago)
+        )
+        new_users = new_result.scalar() or 0
+
+    text = (
+        "👥 <b>Статистика пользователей</b>\n\n"
+        f"Всего зарегистрировано: <b>{total_users}</b>\n"
+        f"С заполненным профилем: <b>{profile_users}</b>\n"
+        f"Активных за неделю: <b>{active_users}</b>\n"
+        f"Новых за неделю: <b>{new_users}</b>\n\n"
+        "<i>Активность определяется по последнему взаимодействию с ботом</i>"
+    )
+
+    await message.answer(text)

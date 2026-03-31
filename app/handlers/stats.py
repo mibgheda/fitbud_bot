@@ -2,7 +2,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from sqlalchemy import select, func
+from sqlalchemy import select, func, cast, Date
 from datetime import datetime, timedelta
 
 from database.database import async_session, CalorieEntry, WorkoutEntry, WeightLog, User, calc_today_start
@@ -39,17 +39,27 @@ async def show_statistics(message: Message, state: FSMContext):
         calories_today = cal_today.scalar() or 0
 
         # Статистика по калориям за неделю
-        cal_week = await session.execute(
-            select(
-                func.count(CalorieEntry.id),
-                func.avg(CalorieEntry.calories)
-            )
+        cal_week_count = await session.execute(
+            select(func.count(CalorieEntry.id))
             .where(CalorieEntry.user_id == message.from_user.id)
             .where(CalorieEntry.created_at >= week_ago)
         )
-        meals_week, avg_week = cal_week.one()
-        meals_week = meals_week or 0
-        avg_week = int(avg_week) if avg_week else 0
+        meals_week = cal_week_count.scalar() or 0
+
+        # Средняя калорийность за день (сумма по дням, затем среднее)
+        daily_sums = (
+            select(
+                func.sum(CalorieEntry.calories).label('daily_total')
+            )
+            .where(CalorieEntry.user_id == message.from_user.id)
+            .where(CalorieEntry.created_at >= week_ago)
+            .group_by(cast(CalorieEntry.created_at, Date))
+            .subquery()
+        )
+        avg_result = await session.execute(
+            select(func.avg(daily_sums.c.daily_total))
+        )
+        avg_week = int(avg_result.scalar() or 0)
 
         # Статистика по тренировкам за неделю
         workout_week = await session.execute(

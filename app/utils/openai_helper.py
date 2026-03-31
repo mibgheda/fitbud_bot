@@ -2,6 +2,7 @@
 Модуль интеграции с OpenAI API для обработки голоса, фото и текста
 """
 import os
+import json
 import base64
 from typing import Optional, Dict, Any
 from openai import AsyncOpenAI
@@ -11,6 +12,17 @@ load_dotenv()
 
 # Инициализация клиента OpenAI
 client = AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+
+def _extract_usage(response) -> dict:
+    """Извлечение данных о расходе токенов из ответа OpenAI"""
+    if response.usage:
+        return {
+            'prompt_tokens': response.usage.prompt_tokens,
+            'completion_tokens': response.usage.completion_tokens,
+            'total_tokens': response.usage.total_tokens,
+        }
+    return {}
 
 
 async def transcribe_voice(audio_file_path: str) -> str:
@@ -97,10 +109,10 @@ async def analyze_food_from_text(text: str, user_context: Optional[Dict] = None)
             response_format={"type": "json_object"}
         )
         
-        import json
         result = json.loads(response.choices[0].message.content)
+        result['_usage'] = _extract_usage(response)
         return result
-        
+
     except Exception as e:
         raise Exception(f"Ошибка анализа еды: {str(e)}")
 
@@ -166,10 +178,10 @@ async def analyze_food_from_photo(image_path: str, user_context: Optional[Dict] 
             response_format={"type": "json_object"}
         )
         
-        import json
         result = json.loads(response.choices[0].message.content)
+        result['_usage'] = _extract_usage(response)
         return result
-        
+
     except Exception as e:
         raise Exception(f"Ошибка анализа фото: {str(e)}")
 
@@ -216,10 +228,10 @@ async def analyze_workout_from_text(text: str) -> Dict[str, Any]:
             response_format={"type": "json_object"}
         )
         
-        import json
         result = json.loads(response.choices[0].message.content)
+        result['_usage'] = _extract_usage(response)
         return result
-        
+
     except Exception as e:
         raise Exception(f"Ошибка анализа тренировки: {str(e)}")
 
@@ -302,8 +314,8 @@ async def generate_meal_plan(user_context: Dict, recent_stats: Optional[Dict] = 
             response_format={"type": "json_object"}
         )
 
-        import json
         result = json.loads(response.choices[0].message.content)
+        result['_usage'] = _extract_usage(response)
         return result
 
     except Exception as e:
@@ -404,8 +416,8 @@ async def generate_workout_plan(user_context: Dict, recent_stats: Optional[Dict]
             response_format={"type": "json_object"}
         )
 
-        import json
         result = json.loads(response.choices[0].message.content)
+        result['_usage'] = _extract_usage(response)
         return result
 
     except Exception as e:
@@ -463,7 +475,7 @@ async def get_smart_recommendation(user_data: Dict, query: str) -> str:
             max_tokens=800
         )
         
-        return response.choices[0].message.content
-        
+        return response.choices[0].message.content, _extract_usage(response)
+
     except Exception as e:
         raise Exception(f"Ошибка получения рекомендации: {str(e)}")

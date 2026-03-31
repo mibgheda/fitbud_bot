@@ -9,6 +9,9 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func
 from datetime import datetime, timedelta
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 from database.database import (
     async_session, User, CalorieEntry, WorkoutEntry, AIInteraction, calc_today_start
@@ -261,13 +264,15 @@ def validate_workout_data(workout_data: dict) -> str | None:
 # ==================== Вспомогательные функции ====================
 
 async def get_user_context(user_id: int) -> dict:
-    """Получение контекста пользователя для AI"""
+    """Получение контекста пользователя для AI + обновление last_active_at"""
     async with async_session() as session:
         result = await session.execute(
             select(User).where(User.telegram_id == user_id)
         )
         user = result.scalar_one_or_none()
         if user:
+            user.last_active_at = datetime.now()
+            await session.commit()
             return {
                 'age': user.age,
                 'gender': user.gender,
@@ -278,6 +283,23 @@ async def get_user_context(user_id: int) -> dict:
                 'daily_target': user.daily_calorie_target
             }
         return {}
+
+
+async def check_user_registered(message: Message) -> bool:
+    """Проверка, что пользователь зарегистрирован и настроил профиль"""
+    async with async_session() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == message.from_user.id)
+        )
+        user = result.scalar_one_or_none()
+        if not user or not user.daily_calorie_target:
+            await message.answer(
+                "Сначала настрой профиль командой /start, "
+                "чтобы использовать AI-функции.",
+                reply_markup=get_main_menu()
+            )
+            return False
+        return True
 
 
 async def show_food_confirmation(message: Message, state: FSMContext,
@@ -372,7 +394,8 @@ async def analyze_and_show_food(message: Message, state: FSMContext,
         food_data = await analyze_food_from_text(text, user_context)
         await show_food_confirmation(message, state, food_data, source_type, file_path, text)
     except Exception as e:
-        await message.answer(f"❌ Ошибка анализа: {str(e)}")
+        logger.exception("Ошибка анализа еды")
+        await message.answer("❌ Не удалось проанализировать. Попробуй ещё раз или опиши иначе.")
 
 
 async def analyze_and_show_workout(message: Message, state: FSMContext,
@@ -397,7 +420,8 @@ async def analyze_and_show_workout(message: Message, state: FSMContext,
         else:
             await show_workout_confirmation(message, state, workout_data, source_type, text)
     except Exception as e:
-        await message.answer(f"❌ Ошибка анализа: {str(e)}")
+        logger.exception("Ошибка анализа тренировки")
+        await message.answer("❌ Не удалось проанализировать. Попробуй ещё раз или опиши иначе.")
 
 
 async def save_food_to_db(user_id: int, food_data: dict, source_type: str,
@@ -420,6 +444,7 @@ async def save_food_to_db(user_id: int, food_data: dict, source_type: str,
         session.add(entry)
         await session.flush()
 
+        usage = food_data.get('_usage', {})
         ai_log = AIInteraction(
             user_id=user_id,
             interaction_type='food_analysis',
@@ -429,6 +454,9 @@ async def save_food_to_db(user_id: int, food_data: dict, source_type: str,
             ai_response=food_data,
             ai_model='gpt-4o-mini',
             ai_confidence=food_data.get('confidence', 0),
+            prompt_tokens=usage.get('prompt_tokens'),
+            completion_tokens=usage.get('completion_tokens'),
+            total_tokens=usage.get('total_tokens'),
             created_entry_type='calorie_entry',
             created_entry_id=entry.id
         )
@@ -456,6 +484,7 @@ async def save_workout_to_db(user_id: int, workout_data: dict,
         session.add(entry)
         await session.flush()
 
+        usage = workout_data.get('_usage', {})
         ai_log = AIInteraction(
             user_id=user_id,
             interaction_type='workout_analysis',
@@ -464,6 +493,9 @@ async def save_workout_to_db(user_id: int, workout_data: dict,
             ai_response=workout_data,
             ai_model='gpt-4o-mini',
             ai_confidence=workout_data.get('confidence', 0),
+            prompt_tokens=usage.get('prompt_tokens'),
+            completion_tokens=usage.get('completion_tokens'),
+            total_tokens=usage.get('total_tokens'),
             created_entry_type='workout_entry',
             created_entry_id=entry.id
         )
@@ -518,6 +550,9 @@ async def quick_input(message: Message, state: FSMContext):
 async def handle_voice_message(message: Message, state: FSMContext):
     """Обработка голосовых сообщений"""
     await state.clear()
+    if not await check_user_registered(message):
+        return
+
     await message.answer("🎤 Слушаю... Обрабатываю голосовое сообщение...")
 
     file_path = None
@@ -537,10 +572,12 @@ async def handle_voice_message(message: Message, state: FSMContext):
             await message.answer(NOT_RECOGNIZED_TEXT, reply_markup=get_main_menu())
 
     except Exception as e:
+        logger.exception("Ошибка обработки голосового сообщения")
         await message.answer(
-            f"❌ Ошибка обработки голосового сообщения: {str(e)}\n\n"
+            "❌ Не удалось обработать голосовое сообщение.\n\n"
             "Попробуй ещё раз или используй текст."
         )
+    finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
 
@@ -551,6 +588,9 @@ async def handle_voice_message(message: Message, state: FSMContext):
 async def handle_photo_message(message: Message, state: FSMContext):
     """Обработка фотографий (еда) — с подтверждением"""
     await state.clear()
+    if not await check_user_registered(message):
+        return
+
     await message.answer("📸 Анализирую фото... Это может занять несколько секунд...")
 
     file_path = None
@@ -566,10 +606,12 @@ async def handle_photo_message(message: Message, state: FSMContext):
         await show_food_confirmation(message, state, food_data, 'photo', file_path)
 
     except Exception as e:
+        logger.exception("Ошибка анализа фото")
         await message.answer(
-            f"❌ Ошибка анализа фото: {str(e)}\n\n"
+            "❌ Не удалось проанализировать фото.\n\n"
             "Попробуй сфотографировать еду с другого ракурса."
         )
+    finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
 
@@ -737,6 +779,9 @@ async def edit_workout(callback: CallbackQuery, state: FSMContext):
 @router.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MENU_BUTTONS))
 async def handle_text_message(message: Message, state: FSMContext):
     """Обработка текстовых сообщений — только еда и тренировки"""
+    if not await check_user_registered(message):
+        return
+
     text = message.text.strip()
 
     if is_food_input(text):
