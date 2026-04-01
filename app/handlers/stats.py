@@ -38,21 +38,23 @@ async def show_statistics(message: Message, state: FSMContext):
         )
         calories_today = cal_today.scalar() or 0
 
-        # Статистика по калориям за неделю
+        # Статистика по калориям за неделю (без воды)
         cal_week_count = await session.execute(
             select(func.count(CalorieEntry.id))
             .where(CalorieEntry.user_id == message.from_user.id)
             .where(CalorieEntry.created_at >= week_ago)
+            .where(CalorieEntry.meal_type != 'water')
         )
         meals_week = cal_week_count.scalar() or 0
 
-        # Средняя калорийность за день (сумма по дням, затем среднее)
+        # Средняя калорийность за день (только дни с записями, без воды)
         daily_sums = (
             select(
                 func.sum(CalorieEntry.calories).label('daily_total')
             )
             .where(CalorieEntry.user_id == message.from_user.id)
             .where(CalorieEntry.created_at >= week_ago)
+            .where(CalorieEntry.meal_type != 'water')
             .group_by(cast(CalorieEntry.created_at, Date))
             .subquery()
         )
@@ -88,6 +90,15 @@ async def show_statistics(message: Message, state: FSMContext):
         workouts_month, duration_month = workout_month.one()
         workouts_month = workouts_month or 0
         duration_month = duration_month or 0
+
+        # Стаканы воды за сегодня
+        water_today_result = await session.execute(
+            select(func.count(CalorieEntry.id))
+            .where(CalorieEntry.user_id == message.from_user.id)
+            .where(CalorieEntry.meal_type == 'water')
+            .where(CalorieEntry.created_at >= today_start)
+        )
+        water_today = water_today_result.scalar() or 0
 
         # Целевая калорийность (уже получили user выше)
         target = user.daily_calorie_target if user and user.daily_calorie_target else 2000
@@ -125,7 +136,8 @@ async def show_statistics(message: Message, state: FSMContext):
             f"<b>📅 Сегодня:</b>\n"
             f"{progress_bar} {progress_percent}%\n"
             f"Калории: <b>{calories_today}</b> / {target} ккал\n"
-            f"Осталось: <b>{remaining}</b> ккал\n\n"
+            f"Осталось: <b>{remaining}</b> ккал\n"
+            f"💧 Вода: <b>{water_today}</b> / 8 стаканов\n\n"
             f"<b>📆 За неделю:</b>\n"
             f"Приемов пищи: <b>{meals_week}</b>\n"
             f"Средняя калорийность: <b>{avg_week}</b> ккал/день\n"

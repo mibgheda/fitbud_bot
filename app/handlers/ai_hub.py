@@ -40,6 +40,8 @@ class AIInput(StatesGroup):
     waiting_for_food_edit = State()
     waiting_for_workout_edit = State()
     waiting_for_workout_duration = State()
+    pending_food_confirmation = State()
+    pending_workout_confirmation = State()
 
 
 # ==================== Ключевые слова для классификации ====================
@@ -208,8 +210,22 @@ WORKOUT_KEYWORDS = {
     'пульс',
 }
 
+WATER_KEYWORDS = {
+    'вода', 'воду', 'воды', 'водичка', 'водичку',
+    'стакан воды', 'выпил воды', 'выпила воды',
+    'попил воды', 'попила воды',
+    'пью воду', 'водички',
+}
+
 
 # ==================== Классификация и валидация ====================
+
+def is_water_input(text: str) -> bool:
+    """Определяет, является ли текст записью воды"""
+    text_lower = text.lower()
+    # Только если это именно про воду, а не "минеральная вода с лимоном" (еда)
+    return any(kw in text_lower for kw in WATER_KEYWORDS)
+
 
 def is_food_input(text: str) -> bool:
     """Определяет, является ли текст вводом еды"""
@@ -230,7 +246,8 @@ def validate_food_data(food_data: dict) -> str | None:
     fats = food_data.get('fats', 0)
     carbs = food_data.get('carbs', 0)
 
-    if calories < 1:
+    # Разрешаем 0 ккал для воды
+    if calories < 1 and food_data.get('meal_type') != 'water':
         return "Калорийность не может быть меньше 1 ккал."
     if calories > 5000:
         return (
@@ -321,7 +338,7 @@ async def show_food_confirmation(message: Message, state: FSMContext,
         pending_food_file_path=file_path,
         pending_food_text=original_text
     )
-    await state.set_state(None)
+    await state.set_state(AIInput.pending_food_confirmation)
 
     confidence_emoji = "✅" if food_data.get('confidence', 0) > 0.8 else "⚠️"
 
@@ -363,7 +380,7 @@ async def show_workout_confirmation(message: Message, state: FSMContext,
         pending_workout_source_type=source_type,
         pending_workout_text=original_text
     )
-    await state.set_state(None)
+    await state.set_state(AIInput.pending_workout_confirmation)
 
     intensity_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}
 
@@ -504,6 +521,55 @@ async def save_workout_to_db(user_id: int, workout_data: dict,
         return entry.id
 
 
+async def record_water(message: Message, state: FSMContext):
+    """Записать стакан воды и показать дневной счётчик"""
+    user_id = message.from_user.id
+
+    async with async_session() as session:
+        # Записываем стакан воды
+        entry = CalorieEntry(
+            user_id=user_id,
+            food_name="💧 Стакан воды",
+            calories=0,
+            protein=0,
+            carbs=0,
+            fats=0,
+            meal_type='water',
+            source_type='text_ai',
+        )
+        session.add(entry)
+
+        # Считаем стаканы за сегодня
+        user_result = await session.execute(
+            select(User).where(User.telegram_id == user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        today_start = calc_today_start(user.current_day_start if user else None)
+
+        water_count = await session.execute(
+            select(func.count(CalorieEntry.id))
+            .where(CalorieEntry.user_id == user_id)
+            .where(CalorieEntry.meal_type == 'water')
+            .where(CalorieEntry.created_at >= today_start)
+        )
+        glasses_today = (water_count.scalar() or 0) + 1  # +1 за текущий
+
+        await session.commit()
+
+    # ~250 мл на стакан, норма ~8 стаканов (2л)
+    target_glasses = 8
+    progress = min(glasses_today, target_glasses)
+    bar = "💧" * progress + "💨" * (target_glasses - progress)
+
+    await message.answer(
+        f"✅ <b>Стакан воды записан!</b>\n\n"
+        f"{bar}\n"
+        f"За сегодня: <b>{glasses_today}</b> / {target_glasses} стаканов\n"
+        f"(~{glasses_today * 250} мл из 2000 мл)",
+        reply_markup=get_main_menu()
+    )
+
+
 NOT_RECOGNIZED_TEXT = (
     "❌ <b>Запрос не распознан</b>\n\n"
     "Я умею записывать только еду и тренировки. Попробуй так:\n\n"
@@ -564,12 +630,16 @@ async def handle_voice_message(message: Message, state: FSMContext):
 
         transcribed_text = await transcribe_voice(file_path)
 
-        if is_food_input(transcribed_text):
+        if is_water_input(transcribed_text):
+            await record_water(message, state)
+        elif is_food_input(transcribed_text):
             await analyze_and_show_food(message, state, transcribed_text, 'voice', file_path)
         elif is_workout_input(transcribed_text):
             await analyze_and_show_workout(message, state, transcribed_text, 'voice')
         else:
-            await message.answer(NOT_RECOGNIZED_TEXT, reply_markup=get_main_menu())
+            # Пробуем как еду через AI (мягкий fallback)
+            await message.answer("🤖 Попробую распознать...")
+            await analyze_and_show_food(message, state, transcribed_text, 'voice', file_path)
 
     except Exception as e:
         logger.exception("Ошибка обработки голосового сообщения")
@@ -617,6 +687,42 @@ async def handle_photo_message(message: Message, state: FSMContext):
 
 
 # ==================== FSM-хэндлеры (до catch-all) ====================
+
+@router.message(AIInput.pending_food_confirmation, not_menu_button)
+async def process_food_correction(message: Message, state: FSMContext):
+    """Уточнение к предыдущему анализу еды (текст после фото/голоса)"""
+    data = await state.get_data()
+    prev_text = data.get('pending_food_text', '')
+    prev_food = data.get('pending_food', {})
+    prev_name = prev_food.get('food_name', '')
+
+    # Объединяем контекст: что AI распознал + уточнение пользователя
+    combined = f"Ранее распознано: {prev_name}. Уточнение пользователя: {message.text.strip()}"
+    if prev_text:
+        combined = f"Оригинал: {prev_text}. Уточнение: {message.text.strip()}"
+
+    await message.answer("🤖 Учитываю уточнение, анализирую заново...")
+    source_type = data.get('pending_food_source_type', 'text_ai')
+    file_path = data.get('pending_food_file_path')
+    await analyze_and_show_food(message, state, combined, source_type, file_path)
+
+
+@router.message(AIInput.pending_workout_confirmation, not_menu_button)
+async def process_workout_correction(message: Message, state: FSMContext):
+    """Уточнение к предыдущему анализу тренировки"""
+    data = await state.get_data()
+    prev_text = data.get('pending_workout_text', '')
+    prev_workout = data.get('pending_workout', {})
+    prev_name = prev_workout.get('workout_type', '')
+
+    combined = f"Ранее распознано: {prev_name}. Уточнение пользователя: {message.text.strip()}"
+    if prev_text:
+        combined = f"Оригинал: {prev_text}. Уточнение: {message.text.strip()}"
+
+    await message.answer("🤖 Учитываю уточнение, анализирую заново...")
+    source_type = data.get('pending_workout_source_type', 'text_ai')
+    await analyze_and_show_workout(message, state, combined, source_type)
+
 
 @router.message(AIInput.waiting_for_food_edit, not_menu_button)
 async def process_food_edit(message: Message, state: FSMContext):
@@ -693,9 +799,20 @@ async def confirm_food(callback: CallbackQuery, state: FSMContext):
         )
         total_today = result.scalar() or 0
 
+        # Стаканы воды за сегодня
+        water_result = await session.execute(
+            select(func.count(CalorieEntry.id))
+            .where(CalorieEntry.user_id == callback.from_user.id)
+            .where(CalorieEntry.meal_type == 'water')
+            .where(CalorieEntry.created_at >= today_start)
+        )
+        water_today = water_result.scalar() or 0
+
     remaining = target - total_today
     progress_percent = min(100, int((total_today / target) * 100))
     progress_bar = "█" * (progress_percent // 10) + "░" * (10 - progress_percent // 10)
+
+    water_info = f"\n💧 Вода: <b>{water_today}</b> / 8 стаканов" if water_today else ""
 
     await callback.message.edit_text(
         f"✅ <b>Добавлено!</b>\n\n"
@@ -703,7 +820,7 @@ async def confirm_food(callback: CallbackQuery, state: FSMContext):
         f"📊 <b>За сегодня:</b>\n"
         f"{progress_bar} {progress_percent}%\n"
         f"Съедено: <b>{total_today}</b> / {target} ккал\n"
-        f"Осталось: <b>{remaining}</b> ккал"
+        f"Осталось: <b>{remaining}</b> ккал{water_info}"
     )
     await state.clear()
     await callback.answer()
@@ -784,7 +901,10 @@ async def handle_text_message(message: Message, state: FSMContext):
 
     text = message.text.strip()
 
-    if is_food_input(text):
+    if is_water_input(text):
+        await record_water(message, state)
+
+    elif is_food_input(text):
         await message.answer("🤖 Анализирую питание...")
         await analyze_and_show_food(message, state, text, 'text_ai')
 
@@ -793,4 +913,6 @@ async def handle_text_message(message: Message, state: FSMContext):
         await analyze_and_show_workout(message, state, text, 'text_ai')
 
     else:
-        await message.answer(NOT_RECOGNIZED_TEXT, reply_markup=get_main_menu())
+        # Не распознали по ключевым словам — пробуем через AI как еду
+        await message.answer("🤖 Анализирую...")
+        await analyze_and_show_food(message, state, text, 'text_ai')
