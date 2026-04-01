@@ -6,6 +6,9 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select, func, update
 from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
 
 from database.database import (
     async_session, User, CalorieEntry, WorkoutEntry,
@@ -37,13 +40,15 @@ def get_current_week_start():
 
 
 async def get_user_context(user_id: int) -> dict:
-    """Профиль пользователя для AI"""
+    """Профиль пользователя для AI + обновление last_active_at"""
     async with async_session() as session:
         result = await session.execute(
             select(User).where(User.telegram_id == user_id)
         )
         user = result.scalar_one_or_none()
         if user:
+            user.last_active_at = datetime.now()
+            await session.commit()
             return {
                 'age': user.age,
                 'gender': user.gender,
@@ -201,7 +206,7 @@ async def meal_plan_button(message: Message, state: FSMContext):
         plan_result = await session.execute(
             select(MealPlan)
             .where(MealPlan.user_id == message.from_user.id)
-            .where(MealPlan.is_active == True)
+            .where(MealPlan.is_active.is_(True))
             .where(MealPlan.week_start == week_start)
         )
         plan = plan_result.scalar_one_or_none()
@@ -230,7 +235,7 @@ async def generate_and_show_meal_plan(message: Message, user_ctx: dict):
             await session.execute(
                 update(MealPlan)
                 .where(MealPlan.user_id == message.from_user.id)
-                .where(MealPlan.is_active == True)
+                .where(MealPlan.is_active.is_(True))
                 .values(is_active=False)
             )
 
@@ -273,8 +278,9 @@ async def generate_and_show_meal_plan(message: Message, user_ctx: dict):
             )
 
     except Exception as e:
+        logger.exception("Ошибка генерации плана питания")
         await message.answer(
-            f"❌ Ошибка генерации плана: {str(e)}\n\nПопробуй ещё раз позже."
+            "❌ Не удалось сгенерировать план питания.\n\nПопробуй ещё раз позже."
         )
 
 
@@ -324,7 +330,7 @@ async def workout_plan_button(message: Message, state: FSMContext):
         plan_result = await session.execute(
             select(WorkoutPlan)
             .where(WorkoutPlan.user_id == message.from_user.id)
-            .where(WorkoutPlan.is_active == True)
+            .where(WorkoutPlan.is_active.is_(True))
             .where(WorkoutPlan.week_start == week_start)
         )
         plan = plan_result.scalar_one_or_none()
@@ -350,7 +356,7 @@ async def generate_and_show_workout_plan(message: Message, user_ctx: dict):
             await session.execute(
                 update(WorkoutPlan)
                 .where(WorkoutPlan.user_id == message.from_user.id)
-                .where(WorkoutPlan.is_active == True)
+                .where(WorkoutPlan.is_active.is_(True))
                 .values(is_active=False)
             )
 
@@ -384,8 +390,9 @@ async def generate_and_show_workout_plan(message: Message, user_ctx: dict):
             await show_workout_plan_day(message, plan.id, today)
 
     except Exception as e:
+        logger.exception("Ошибка генерации плана тренировок")
         await message.answer(
-            f"❌ Ошибка генерации плана: {str(e)}\n\nПопробуй ещё раз позже."
+            "❌ Не удалось сгенерировать план тренировок.\n\nПопробуй ещё раз позже."
         )
 
 
@@ -424,7 +431,16 @@ async def navigate_meal_plan_day(callback: CallbackQuery):
     plan_id = int(parts[1])
     day = int(parts[2])
 
-    # Получаем target калорийности
+    # Проверка владельца плана
+    async with async_session() as session:
+        result = await session.execute(
+            select(MealPlan).where(MealPlan.id == plan_id)
+        )
+        plan = result.scalar_one_or_none()
+        if not plan or plan.user_id != callback.from_user.id:
+            await callback.answer("Доступ запрещён")
+            return
+
     user_ctx = await get_user_context(callback.from_user.id)
     daily_target = user_ctx.get('daily_target', 2000)
 
@@ -438,6 +454,16 @@ async def navigate_workout_plan_day(callback: CallbackQuery):
     parts = callback.data.split("_")
     plan_id = int(parts[1])
     day = int(parts[2])
+
+    # Проверка владельца плана
+    async with async_session() as session:
+        result = await session.execute(
+            select(WorkoutPlan).where(WorkoutPlan.id == plan_id)
+        )
+        plan = result.scalar_one_or_none()
+        if not plan or plan.user_id != callback.from_user.id:
+            await callback.answer("Доступ запрещён")
+            return
 
     await show_workout_plan_day(callback, plan_id, day)
     await callback.answer()
@@ -455,7 +481,10 @@ async def complete_meal_item(callback: CallbackQuery):
             select(MealPlanItem).where(MealPlanItem.id == item_id)
         )
         item = result.scalar_one_or_none()
-        if not item or item.is_completed:
+        if not item or item.user_id != callback.from_user.id:
+            await callback.answer("Доступ запрещён")
+            return
+        if item.is_completed:
             await callback.answer("Уже отмечено!")
             return
 
@@ -497,7 +526,10 @@ async def complete_workout_item(callback: CallbackQuery):
             select(WorkoutPlanItem).where(WorkoutPlanItem.id == item_id)
         )
         item = result.scalar_one_or_none()
-        if not item or item.is_completed:
+        if not item or item.user_id != callback.from_user.id:
+            await callback.answer("Доступ запрещён")
+            return
+        if item.is_completed:
             await callback.answer("Уже отмечено!")
             return
 
@@ -536,8 +568,8 @@ async def show_recipe(callback: CallbackQuery):
         )
         item = result.scalar_one_or_none()
 
-    if not item:
-        await callback.answer("Блюдо не найдено")
+    if not item or item.user_id != callback.from_user.id:
+        await callback.answer("Доступ запрещён")
         return
 
     meal_name = MEAL_TYPE_NAMES.get(item.meal_type, '🍽 Приём пищи')

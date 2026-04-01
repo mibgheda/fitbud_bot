@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Boolean, Text, JSON, text
+from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Boolean, Text, JSON, text, func
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -11,7 +11,7 @@ load_dotenv()
 DATABASE_URL = f"postgresql+asyncpg://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
 
 # Создаем асинхронный движок
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(DATABASE_URL, echo=False)
 
 # Создаем фабрику сессий
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -38,8 +38,9 @@ class User(Base):
     goal = Column(String(50))  # lose_weight, maintain, gain_weight
     daily_calorie_target = Column(Integer)
     current_day_start = Column(DateTime)  # /new_day override
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_active_at = Column(DateTime)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class CalorieEntry(Base):
@@ -61,7 +62,7 @@ class CalorieEntry(Base):
     ai_confidence = Column(Float)  # Уверенность AI в анализе (0-1)
     ai_notes = Column(Text)  # Заметки/рекомендации от AI
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class WorkoutEntry(Base):
@@ -82,7 +83,7 @@ class WorkoutEntry(Base):
     pace = Column(String(50))  # темп (если применимо)
     ai_confidence = Column(Float)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class WeightLog(Base):
@@ -92,7 +93,7 @@ class WeightLog(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger, nullable=False)
     weight = Column(Float, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class HealthData(Base):
@@ -115,7 +116,7 @@ class HealthData(Base):
     
     notes = Column(Text)  # Комментарии врача или AI
     test_date = Column(DateTime)  # дата сдачи анализа
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class AIInteraction(Base):
@@ -135,12 +136,17 @@ class AIInteraction(Base):
     ai_response = Column(JSON)  # структурированный ответ AI
     ai_model = Column(String(50))  # gpt-4o, gpt-4o-mini, whisper-1
     ai_confidence = Column(Float)
-    
+
+    # Расход токенов
+    prompt_tokens = Column(Integer)
+    completion_tokens = Column(Integer)
+    total_tokens = Column(Integer)
+
     # Связь с созданными записями
     created_entry_type = Column(String(50))  # calorie_entry, workout_entry, health_data
     created_entry_id = Column(Integer)  # ID созданной записи
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class MealPlan(Base):
@@ -152,7 +158,7 @@ class MealPlan(Base):
     week_start = Column(DateTime, nullable=False)
     is_active = Column(Boolean, default=True)
     ai_response = Column(JSON)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class MealPlanItem(Base):
@@ -173,7 +179,7 @@ class MealPlanItem(Base):
     carbs = Column(Float, default=0)
     is_completed = Column(Boolean, default=False)
     completed_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class WorkoutPlan(Base):
@@ -185,7 +191,7 @@ class WorkoutPlan(Base):
     week_start = Column(DateTime, nullable=False)
     is_active = Column(Boolean, default=True)
     ai_response = Column(JSON)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class WorkoutPlanItem(Base):
@@ -204,7 +210,7 @@ class WorkoutPlanItem(Base):
     is_rest_day = Column(Boolean, default=False)
     is_completed = Column(Boolean, default=False)
     completed_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 def calc_today_start(user_day_start=None):
@@ -220,9 +226,14 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Добавляем новые колонки для существующих таблиц
-        await conn.execute(text(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS current_day_start TIMESTAMP"
-        ))
+        for stmt in [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS current_day_start TIMESTAMP",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP",
+            "ALTER TABLE ai_interactions ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER",
+            "ALTER TABLE ai_interactions ADD COLUMN IF NOT EXISTS completion_tokens INTEGER",
+            "ALTER TABLE ai_interactions ADD COLUMN IF NOT EXISTS total_tokens INTEGER",
+        ]:
+            await conn.execute(text(stmt))
 
 
 async def get_session() -> AsyncSession:

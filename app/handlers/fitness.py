@@ -29,16 +29,6 @@ CALORIES_PER_30MIN = {
 }
 
 
-@router.message(F.text == "🏃 Добавить тренировку")
-async def start_add_workout(message: Message, state: FSMContext):
-    """Начало процесса добавления тренировки"""
-    await state.clear()
-    await message.answer(
-        "Какой тип тренировки?",
-        reply_markup=get_workout_type_keyboard()
-    )
-    await state.set_state(AddWorkout.waiting_for_workout_type)
-
 
 @router.callback_query(F.data.startswith("workout_"))
 async def process_workout_type(callback: CallbackQuery, state: FSMContext):
@@ -154,11 +144,3 @@ async def process_notes(message: Message, state: FSMContext):
 
     await message.answer(response, reply_markup=get_main_menu())
     await state.clear()
-
-
-@router.callback_query(F.data == "cancel")
-async def cancel_workout_action(callback: CallbackQuery, state: FSMContext):
-    """Отмена добавления тренировки"""
-    await callback.message.edit_text("❌ Добавление отменено")
-    await state.clear()
-    await callback.answer()
