@@ -312,24 +312,25 @@ def is_workout_input(text: str) -> bool:
 
 def validate_food_data(food_data: dict) -> str | None:
     """Валидация данных о еде. Возвращает сообщение об ошибке или None."""
-    calories = food_data.get('calories', 0)
-    protein = food_data.get('protein', 0)
-    fats = food_data.get('fats', 0)
-    carbs = food_data.get('carbs', 0)
+    # Новый формат: total_calories в корне
+    calories = food_data.get('total_calories') or food_data.get('calories', 0)
+    protein = food_data.get('total_protein') or food_data.get('protein', 0)
+    fats = food_data.get('total_fats') or food_data.get('fats', 0)
+    carbs = food_data.get('total_carbs') or food_data.get('carbs', 0)
 
     # Разрешаем 0 ккал для воды
     if calories < 1 and food_data.get('meal_type') != 'water':
         return "Калорийность не может быть меньше 1 ккал."
-    if calories > 5000:
+    if calories > 10000:
         return (
             f"Калорийность <b>{calories} ккал</b> выглядит нереалистично "
-            "для одного приёма пищи (максимум 5000 ккал)."
+            "для одного приёма пищи (максимум 10000 ккал)."
         )
-    if protein > 300:
+    if protein > 500:
         return f"Белки <b>{protein:.0f} г</b> — слишком много для одного приёма пищи."
-    if fats > 300:
+    if fats > 500:
         return f"Жиры <b>{fats:.0f} г</b> — слишком много для одного приёма пищи."
-    if carbs > 500:
+    if carbs > 800:
         return f"Углеводы <b>{carbs:.0f} г</b> — слишком много для одного приёма пищи."
     return None
 
@@ -413,22 +414,58 @@ async def show_food_confirmation(message: Message, state: FSMContext,
 
     confidence_emoji = "✅" if food_data.get('confidence', 0) > 0.8 else "⚠️"
 
-    response = (
-        f"{confidence_emoji} <b>AI распознал:</b>\n\n"
-        f"🍽 <b>{food_data['food_name']}</b>\n"
-        f"📊 Калории: <b>{food_data['calories']} ккал</b>\n"
-        f"Б/Ж/У: {food_data.get('protein', 0):.1f} / "
-        f"{food_data.get('fats', 0):.1f} / "
-        f"{food_data.get('carbs', 0):.1f} г\n"
-    )
+    response = f"{confidence_emoji} <b>AI распознал:</b>\n"
 
-    if food_data.get('items'):
-        items_text = "\n".join([f"  • {item}" for item in food_data['items']])
-        response += f"\n<b>Состав:</b>\n{items_text}\n"
+    items = food_data.get('items', [])
+    if items and isinstance(items, list) and isinstance(items[0], dict):
+        # Новый формат: массив объектов с деталями
+        for item in items:
+            name = item.get('food_name', '?')
+            cal = item.get('calories', 0)
+            p = item.get('protein', 0)
+            f = item.get('fats', 0)
+            c = item.get('carbs', 0)
+            fiber = item.get('fiber', 0)
+            response += (
+                f"\n🍽 <b>{name}</b>\n"
+                f"📊 Калории: <b>{cal} ккал</b>\n"
+                f"Б/Ж/У: {p:.1f} / {f:.1f} / {c:.1f} г\n"
+            )
+            if fiber:
+                response += f"Клетчатка: {fiber:.1f} г\n"
 
-    if food_data.get('notes'):
-        notes = food_data['notes'].replace('<', '&lt;').replace('>', '&gt;')
-        response += f"\n💡 <i>{notes}</i>"
+        # Итого
+        total_cal = food_data.get('total_calories', 0)
+        total_p = food_data.get('total_protein', 0)
+        total_f = food_data.get('total_fats', 0)
+        total_c = food_data.get('total_carbs', 0)
+        total_fiber = food_data.get('total_fiber', 0)
+
+        response += (
+            f"\n{'─' * 20}\n"
+            f"🍽 <b>Итого приём пищи:</b>\n"
+            f"📊 Калории: <b>{total_cal} ккал</b>\n"
+            f"Б/Ж/У: {total_p:.1f} / {total_f:.1f} / {total_c:.1f} г\n"
+        )
+        if total_fiber:
+            response += f"Клетчатка: {total_fiber:.1f} г\n"
+    else:
+        # Старый формат / одно блюдо — fallback
+        food_name = food_data.get('food_name', '?')
+        cal = food_data.get('total_calories') or food_data.get('calories', 0)
+        p = food_data.get('total_protein') or food_data.get('protein', 0)
+        f_val = food_data.get('total_fats') or food_data.get('fats', 0)
+        c = food_data.get('total_carbs') or food_data.get('carbs', 0)
+        response += (
+            f"\n🍽 <b>{food_name}</b>\n"
+            f"📊 Калории: <b>{cal} ккал</b>\n"
+            f"Б/Ж/У: {p:.1f} / {f_val:.1f} / {c:.1f} г\n"
+        )
+
+    tip = food_data.get('tip') or food_data.get('notes', '')
+    if tip:
+        tip = tip.replace('<', '&lt;').replace('>', '&gt;')
+        response += f"\n💡 <i>{tip}</i>"
 
     await message.answer(response, reply_markup=get_ai_food_confirm_keyboard())
 
@@ -513,24 +550,52 @@ async def analyze_and_show_workout(message: Message, state: FSMContext,
 
 
 async def save_food_to_db(user_id: int, food_data: dict, source_type: str,
-                           file_path: str = None, original_text: str = None) -> int:
-    """Сохранение еды в БД"""
+                           file_path: str = None, original_text: str = None) -> list[int]:
+    """Сохранение еды в БД. Каждый item — отдельная запись."""
+    items = food_data.get('items', [])
+    meal_type = food_data.get('meal_type', 'snack')
+    confidence = food_data.get('confidence', 0)
+
     async with async_session() as session:
-        entry = CalorieEntry(
-            user_id=user_id,
-            food_name=food_data['food_name'],
-            calories=food_data['calories'],
-            protein=food_data.get('protein', 0),
-            carbs=food_data.get('carbs', 0),
-            fats=food_data.get('fats', 0),
-            meal_type=food_data.get('meal_type', 'snack'),
-            source_type=source_type,
-            source_data={'original_text': original_text, 'file_path': file_path},
-            ai_confidence=food_data.get('confidence', 0),
-            ai_notes=food_data.get('notes', '')
-        )
-        session.add(entry)
-        await session.flush()
+        entry_ids = []
+
+        if items and isinstance(items, list) and isinstance(items[0], dict):
+            # Новый формат: сохраняем каждое блюдо отдельно
+            for item in items:
+                entry = CalorieEntry(
+                    user_id=user_id,
+                    food_name=item.get('food_name', '?'),
+                    calories=item.get('calories', 0),
+                    protein=item.get('protein', 0),
+                    carbs=item.get('carbs', 0),
+                    fats=item.get('fats', 0),
+                    meal_type=meal_type,
+                    source_type=source_type,
+                    source_data={'original_text': original_text, 'file_path': file_path},
+                    ai_confidence=confidence,
+                    ai_notes=food_data.get('tip', '')
+                )
+                session.add(entry)
+                await session.flush()
+                entry_ids.append(entry.id)
+        else:
+            # Старый формат / fallback
+            entry = CalorieEntry(
+                user_id=user_id,
+                food_name=food_data.get('food_name', '?'),
+                calories=food_data.get('total_calories') or food_data.get('calories', 0),
+                protein=food_data.get('total_protein') or food_data.get('protein', 0),
+                carbs=food_data.get('total_carbs') or food_data.get('carbs', 0),
+                fats=food_data.get('total_fats') or food_data.get('fats', 0),
+                meal_type=meal_type,
+                source_type=source_type,
+                source_data={'original_text': original_text, 'file_path': file_path},
+                ai_confidence=confidence,
+                ai_notes=food_data.get('tip') or food_data.get('notes', '')
+            )
+            session.add(entry)
+            await session.flush()
+            entry_ids.append(entry.id)
 
         usage = food_data.get('_usage', {})
         ai_log = AIInteraction(
@@ -541,16 +606,16 @@ async def save_food_to_db(user_id: int, food_data: dict, source_type: str,
             input_file_path=file_path,
             ai_response=food_data,
             ai_model='gpt-4o-mini',
-            ai_confidence=food_data.get('confidence', 0),
+            ai_confidence=confidence,
             prompt_tokens=usage.get('prompt_tokens'),
             completion_tokens=usage.get('completion_tokens'),
             total_tokens=usage.get('total_tokens'),
             created_entry_type='calorie_entry',
-            created_entry_id=entry.id
+            created_entry_id=entry_ids[0] if entry_ids else None
         )
         session.add(ai_log)
         await session.commit()
-        return entry.id
+        return entry_ids
 
 
 async def save_workout_to_db(user_id: int, workout_data: dict,
@@ -917,9 +982,18 @@ async def confirm_food(callback: CallbackQuery, state: FSMContext):
 
     water_info = f"\n💧 Вода: <b>{water_today}</b> / 8 стаканов" if water_today else ""
 
+    # Название для отображения
+    items = food_data.get('items', [])
+    if items and isinstance(items, list) and isinstance(items[0], dict):
+        food_names = ", ".join(i.get('food_name', '?') for i in items)
+        food_cal = food_data.get('total_calories', 0)
+    else:
+        food_names = food_data.get('food_name', '?')
+        food_cal = food_data.get('total_calories') or food_data.get('calories', 0)
+
     await callback.message.edit_text(
         f"✅ <b>Добавлено!</b>\n\n"
-        f"🍽 <b>{food_data['food_name']}</b>: <b>{food_data['calories']} ккал</b>\n\n"
+        f"🍽 <b>{food_names}</b>: <b>{food_cal} ккал</b>\n\n"
         f"📊 <b>За сегодня:</b>\n"
         f"{progress_bar} {progress_percent}%\n"
         f"Съедено: <b>{total_today}</b> / {target} ккал\n"
