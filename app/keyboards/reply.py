@@ -4,7 +4,8 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 # Тексты кнопок главного меню — используется для фильтрации в FSM-хэндлерах
 MENU_BUTTONS = [
     "✨ Быстрый ввод",
-    "🍽 План питания", "🏋️ План тренировок",
+    "💧 Вода",
+    # "🍽 План питания", "🏋️ План тренировок",  # Отложено на этап 2, не удалять!
     "📈 Моя статистика", "👤 Мой профиль",
     "⚖️ Записать вес", "❓ Помощь"
 ]
@@ -25,8 +26,8 @@ def not_menu_button(message) -> bool:
 def get_main_menu():
     """Главное меню бота"""
     keyboard = [
-        [KeyboardButton(text="✨ Быстрый ввод")],
-        [KeyboardButton(text="🍽 План питания"), KeyboardButton(text="🏋️ План тренировок")],
+        [KeyboardButton(text="✨ Быстрый ввод"), KeyboardButton(text="💧 Вода")],
+        # [KeyboardButton(text="🍽 План питания"), KeyboardButton(text="🏋️ План тренировок")],  # Отложено на этап 2, не удалять!
         [KeyboardButton(text="📈 Моя статистика"), KeyboardButton(text="👤 Мой профиль")],
         [KeyboardButton(text="⚖️ Записать вес"), KeyboardButton(text="❓ Помощь")]
     ]
