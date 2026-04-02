@@ -107,27 +107,62 @@ FOOD_KEYWORDS = {
     'вишня', 'персик', 'абрикос', 'слива', 'сливу',
     'киви', 'манго', 'ананас', 'гранат',
     # Сладости и десерты
-    'торт', 'пирожное', 'кекс', 'маффин', 'шоколад', 'шоколадка',
-    'конфеты', 'конфету', 'печенье', 'вафли', 'мороженое',
+    'торт', 'пирожное', 'кекс', 'маффин', 'шоколад', 'шоколадка', 'шоколадку',
+    'конфета', 'конфеты', 'конфету', 'конфетка', 'конфетку',
+    'печенье', 'печеньку', 'вафли', 'вафля', 'вафлю', 'мороженое',
     'зефир', 'мармелад', 'халва', 'халву', 'пахлава', 'пахлаву',
     'тирамису', 'чизкейк', 'панкейк', 'панкейки',
+    'пастила', 'пастилу', 'ирис', 'ириска', 'ириску',
+    'леденец', 'карамель', 'карамельку', 'драже',
+    # Бренды сладостей (часто пишут без глагола)
+    'баунти', 'сникерс', 'марс', 'твикс', 'кит-кат', 'киткат',
+    'милка', 'алёнка', 'алёнку', 'рафаэлло', 'ферреро',
+    'нутелла', 'нутеллу', 'орео',
     # Орехи и снеки
     'орехи', 'орешки', 'арахис', 'миндаль', 'кешью', 'фисташки',
-    'семечки', 'сухарики', 'крекер', 'батончик',
-    'гранола', 'гранолу', 'мюсли',
+    'семечки', 'сухарики', 'крекер', 'батончик', 'батончика',
+    'гранола', 'гранолу', 'мюсли', 'сухофрукты',
+    'изюм', 'курага', 'курагу', 'чернослив',
+    'финики', 'финик',
+    # Соусы и приправы (контекст еды)
+    'кетчуп', 'майонез', 'майонезом', 'горчица', 'горчицу',
+    'соус', 'соусом', 'аджика', 'аджику',
+    # Крупы и бобовые (дополнение)
+    'рис', 'фасоль', 'горох', 'чечевица', 'чечевицу', 'нут',
+    'пшено', 'манка', 'манку',
+    # Дополнительные блюда
+    'голубцы', 'драники', 'сырник', 'блинчик', 'блинчики',
+    'рагу', 'жаркое', 'гуляш', 'азу', 'бефстроганов',
+    'шницель', 'тефтели', 'фрикадельки',
+    'окорочок', 'крылышки', 'грудка', 'грудку', 'филе',
+    'ребрышки', 'рёбрышки',
+    'сардельки', 'сарделька',
+    'пельмень', 'вареник', 'хинкали',
+    'лазанья', 'лазанью', 'равиоли', 'ньокки',
+    'ризотто', 'карбонара', 'карбонару',
+    # Закуски
+    'бутер', 'канапе', 'тартар', 'брускетта', 'брускетту',
+    'хумус', 'гуакамоле',
+    # Молочка (дополнение)
+    'простокваша', 'простоквашу', 'снежок', 'айран',
+    'мацони', 'тан', 'варенец',
     # Напитки
     'сок', 'компот', 'кофе', 'какао', 'лимонад',
     'кола', 'колу', 'фанта', 'фанту', 'спрайт', 'квас',
     'морс', 'смузи', 'коктейль', 'латте', 'капучино',
-    'эспрессо', 'американо',
+    'эспрессо', 'американо', 'раф', 'матча', 'матчу',
+    'чай', 'кисель',
     # Алкоголь
     'пиво', 'вино', 'водка', 'водку', 'виски',
-    'коньяк', 'шампанское', 'ром',
+    'коньяк', 'шампанское', 'ром', 'текила', 'текилу',
+    'ликёр', 'настойка', 'настойку', 'сидр',
     # Спортпит
-    'протеин', 'гейнер', 'изолят',
+    'протеин', 'гейнер', 'изолят', 'bcaa', 'бцаа',
     # Единицы и контекст
-    'калори', 'ккал', 'порция', 'порцию', 'кусок',
+    'калори', 'ккал', 'порция', 'порцию', 'кусок', 'кусочек',
     'ложка', 'ложку', 'стакан', 'чашка', 'чашку',
+    'тарелка', 'тарелку', 'миска', 'миску',
+    'грамм', 'граммов',
 }
 
 WORKOUT_KEYWORDS = {
@@ -216,6 +251,42 @@ WATER_KEYWORDS = {
     'попил воды', 'попила воды',
     'пью воду', 'водички',
 }
+
+import re
+
+def parse_water_amount(text: str) -> int:
+    """
+    Парсит количество воды из текста. Возвращает мл.
+    Примеры: '100 мл воды' → 100, '2 стакана воды' → 500, 'стакан воды' → 250,
+             '100 гр воды' → 100, '0.5 литра воды' → 500, 'воду' → 250 (по умолчанию)
+    """
+    text_lower = text.lower().strip()
+
+    # Литры: "0.5 литра", "1 л воды", "1.5 литра"
+    m = re.search(r'(\d+[.,]?\d*)\s*(?:л\b|литр)', text_lower)
+    if m:
+        liters = float(m.group(1).replace(',', '.'))
+        return int(liters * 1000)
+
+    # Миллилитры: "100 мл", "250мл", "100 гр воды" (гр воды = мл)
+    m = re.search(r'(\d+)\s*(?:мл|грамм|гр\b|г\b)', text_lower)
+    if m:
+        return int(m.group(1))
+
+    # Стаканы: "2 стакана", "3 стакана воды"
+    m = re.search(r'(\d+)\s*стакан', text_lower)
+    if m:
+        return int(m.group(1)) * 250
+
+    # Просто число перед "воды/воду": "200 воды"
+    m = re.search(r'(\d+)\s*вод', text_lower)
+    if m:
+        val = int(m.group(1))
+        if val >= 50:  # скорее всего мл
+            return val
+
+    # По умолчанию — 1 стакан (250 мл)
+    return 250
 
 
 # ==================== Классификация и валидация ====================
@@ -521,15 +592,30 @@ async def save_workout_to_db(user_id: int, workout_data: dict,
         return entry.id
 
 
-async def record_water(message: Message, state: FSMContext):
-    """Записать стакан воды и показать дневной счётчик"""
+async def record_water(message: Message, state: FSMContext, glasses: int = None, ml: int = None):
+    """Записать воду и показать дневной счётчик.
+
+    glasses — кол-во стаканов (кнопка меню).
+    ml — миллилитры (текстовый ввод).
+    Если ничего не передано — парсим из текста сообщения.
+    """
     user_id = message.from_user.id
 
+    if ml is None and glasses is not None:
+        ml = glasses * 250
+    elif ml is None:
+        ml = parse_water_amount(message.text or '')
+
+    # food_name отражает реальный объём
+    if ml % 250 == 0 and ml > 0:
+        label = f"💧 Вода ({ml // 250} ст. / {ml} мл)"
+    else:
+        label = f"💧 Вода ({ml} мл)"
+
     async with async_session() as session:
-        # Записываем стакан воды
         entry = CalorieEntry(
             user_id=user_id,
-            food_name="💧 Стакан воды",
+            food_name=label,
             calories=0,
             protein=0,
             carbs=0,
@@ -539,33 +625,41 @@ async def record_water(message: Message, state: FSMContext):
         )
         session.add(entry)
 
-        # Считаем стаканы за сегодня
+        # Считаем общий объём воды за сегодня
         user_result = await session.execute(
             select(User).where(User.telegram_id == user_id)
         )
         user = user_result.scalar_one_or_none()
         today_start = calc_today_start(user.current_day_start if user else None)
 
-        water_count = await session.execute(
-            select(func.count(CalorieEntry.id))
+        # Суммируем мл по food_name (парсим из записей)
+        water_entries = await session.execute(
+            select(CalorieEntry.food_name)
             .where(CalorieEntry.user_id == user_id)
             .where(CalorieEntry.meal_type == 'water')
             .where(CalorieEntry.created_at >= today_start)
         )
-        glasses_today = (water_count.scalar() or 0) + 1  # +1 за текущий
+        existing_entries = water_entries.scalars().all()
 
         await session.commit()
 
-    # ~250 мл на стакан, норма ~8 стаканов (2л)
-    target_glasses = 8
-    progress = min(glasses_today, target_glasses)
-    bar = "💧" * progress + "💨" * (target_glasses - progress)
+    # Считаем мл из уже записанных + текущая
+    total_ml = ml
+    for fname in existing_entries:
+        m = re.search(r'(\d+)\s*мл', fname)
+        if m:
+            total_ml += int(m.group(1))
+        else:
+            total_ml += 250  # старые записи без мл — считаем стакан
+
+    target_ml = 2000
+    progress_glasses = min(8, total_ml // 250)
+    bar = "💧" * progress_glasses + "💨" * (8 - progress_glasses)
 
     await message.answer(
-        f"✅ <b>Стакан воды записан!</b>\n\n"
+        f"✅ <b>Записано: {ml} мл воды</b>\n\n"
         f"{bar}\n"
-        f"За сегодня: <b>{glasses_today}</b> / {target_glasses} стаканов\n"
-        f"(~{glasses_today * 250} мл из 2000 мл)",
+        f"За сегодня: <b>{total_ml}</b> / {target_ml} мл",
         reply_markup=get_main_menu()
     )
 
@@ -610,6 +704,17 @@ async def quick_input(message: Message, state: FSMContext):
     )
 
 
+# ==================== Кнопка «Вода» ====================
+
+@router.message(F.text == "💧 Вода")
+async def water_button(message: Message, state: FSMContext):
+    """Кнопка записи воды из меню"""
+    await state.clear()
+    if not await check_user_registered(message):
+        return
+    await record_water(message, state, glasses=1)
+
+
 # ==================== Голосовые сообщения ====================
 
 @router.message(F.voice)
@@ -631,15 +736,13 @@ async def handle_voice_message(message: Message, state: FSMContext):
         transcribed_text = await transcribe_voice(file_path)
 
         if is_water_input(transcribed_text):
-            await record_water(message, state)
+            await record_water(message, state, ml=parse_water_amount(transcribed_text))
         elif is_food_input(transcribed_text):
             await analyze_and_show_food(message, state, transcribed_text, 'voice', file_path)
         elif is_workout_input(transcribed_text):
             await analyze_and_show_workout(message, state, transcribed_text, 'voice')
         else:
-            # Пробуем как еду через AI (мягкий fallback)
-            await message.answer("🤖 Попробую распознать...")
-            await analyze_and_show_food(message, state, transcribed_text, 'voice', file_path)
+            await message.answer(NOT_RECOGNIZED_TEXT, reply_markup=get_main_menu())
 
     except Exception as e:
         logger.exception("Ошибка обработки голосового сообщения")
@@ -913,6 +1016,4 @@ async def handle_text_message(message: Message, state: FSMContext):
         await analyze_and_show_workout(message, state, text, 'text_ai')
 
     else:
-        # Не распознали по ключевым словам — пробуем через AI как еду
-        await message.answer("🤖 Анализирую...")
-        await analyze_and_show_food(message, state, text, 'text_ai')
+        await message.answer(NOT_RECOGNIZED_TEXT, reply_markup=get_main_menu())
