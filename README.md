@@ -74,6 +74,21 @@ DB_HOST=localhost
 DB_PORT=5432
 ```
 
+AI-провайдер (по умолчанию OpenAI):
+```
+# OpenAI
+AI_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+
+# или бесплатный Google Gemini (ключ: https://aistudio.google.com)
+AI_PROVIDER=gemini
+GEMINI_API_KEY=...
+
+# необязательно: свои модели
+# AI_MODEL_FAST=gemini-3.5-flash-lite   # еда, тренировки, голос
+# AI_MODEL_SMART=gemini-3.8-flash       # рекомендации
+```
+
 ### 6. Запуск бота
 
 ```bash

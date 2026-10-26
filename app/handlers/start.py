@@ -15,6 +15,7 @@ from database.database import (
     HealthData, AIInteraction, MealPlan, MealPlanItem,
     WorkoutPlan, WorkoutPlanItem, calc_today_start,
 )
+from utils.openai_helper import AI_PROVIDER
 from keyboards.reply import (
     get_main_menu,
     get_agreement_keyboard,
@@ -559,10 +560,17 @@ async def cmd_balance(message: Message, state: FSMContext):
         'gpt-4o-mini': {'input': 0.15, 'output': 0.60},
         'gpt-4o': {'input': 2.50, 'output': 10.00},
         'whisper-1': {'input': 0, 'output': 0},
+        # Gemini на бесплатном тарифе — $0
+        'gemini': {'input': 0, 'output': 0},
     }
 
+    def get_prices(model_name: str) -> dict:
+        # API возвращает имя с датой снапшота (gpt-4o-mini-2024-07-18) — ищем самый длинный префикс
+        matches = [key for key in PRICES if (model_name or '').startswith(key)]
+        return PRICES[max(matches, key=len)] if matches else {'input': 0, 'output': 0}
+
     text = (
-        "💰 <b>Расход токенов OpenAI</b>\n\n"
+        f"💰 <b>Расход токенов AI</b> (сейчас: {AI_PROVIDER})\n\n"
         f"📊 Запросов: сегодня <b>{today_total}</b> | "
         f"за неделю <b>{week_total}</b> | всего <b>{all_total}</b>\n\n"
     )
@@ -578,7 +586,7 @@ async def cmd_balance(message: Message, state: FSMContext):
         grand_completion += compl_tk
         grand_total += total_tk
 
-        prices = PRICES.get(model or '', {'input': 0, 'output': 0})
+        prices = get_prices(model)
         cost = (prompt_tk / 1_000_000 * prices['input'] +
                 compl_tk / 1_000_000 * prices['output'])
         estimated_cost += cost
@@ -592,7 +600,7 @@ async def cmd_balance(message: Message, state: FSMContext):
     text += (
         f"<b>Итого токенов:</b> {grand_total:,}\n"
         f"<b>Примерная стоимость:</b> ~${estimated_cost:.4f}\n\n"
-        "<i>Цены приблизительные (gpt-4o-mini: $0.15/$0.60, gpt-4o: $2.50/$10.00 за 1M токенов)</i>"
+        "<i>Цены приблизительные (gpt-4o-mini: $0.15/$0.60, gpt-4o: $2.50/$10.00 за 1M токенов, Gemini free — $0)</i>"
     )
 
     await message.answer(text)
