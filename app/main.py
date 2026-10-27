@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import os
 
 from database.database import init_db
+from middlewares.update_gate import UpdateGate
 from handlers import start, settings, calories, fitness, profile, stats, plans, day, ai_hub
 
 # Загружаем переменные окружения
@@ -31,6 +32,11 @@ async def main():
     # Инициализация диспетчера
     dp = Dispatcher()
     
+    # Пользователи старой версии при любом взаимодействии сначала проходят разовое обновление профиля
+    update_gate = UpdateGate()
+    dp.message.outer_middleware(update_gate)
+    dp.callback_query.outer_middleware(update_gate)
+
     # Подключаем роутеры из handlers
     # Порядок важен: конкретные хэндлеры (кнопки меню, FSM-состояния) — первыми,
     # ai_hub (catch-all для текста) — последним, чтобы не перехватывать кнопки меню

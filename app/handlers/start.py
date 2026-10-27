@@ -378,22 +378,17 @@ logger = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 
 
-@router.message(Command("broadcast"))
-async def cmd_broadcast(message: Message, state: FSMContext):
-    """Рассылка сообщения всем пользователям (только для админа)"""
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    text = message.text.removeprefix("/broadcast").strip()
+async def _broadcast(message: Message, command: str):
+    """Разослать текст после команды всем пользователям"""
+    text = message.text.removeprefix(command).strip()
     if not text:
         await message.answer(
             "Использование:\n"
-            "<code>/broadcast Текст сообщения</code>\n\n"
+            f"<code>{command} Текст сообщения</code>\n\n"
             "Поддерживается HTML-разметка."
         )
         return
 
-    # Получаем всех пользователей
     async with async_session() as session:
         result = await session.execute(select(User.telegram_id))
         user_ids = [row[0] for row in result.all()]
@@ -401,7 +396,6 @@ async def cmd_broadcast(message: Message, state: FSMContext):
     total = len(user_ids)
     sent = 0
     failed = 0
-
     status_msg = await message.answer(f"📤 Начинаю рассылку {total} пользователям...")
 
     for user_id in user_ids:
@@ -421,6 +415,14 @@ async def cmd_broadcast(message: Message, state: FSMContext):
         f"Отправлено: <b>{sent}</b> / {total}\n"
         f"Не доставлено: <b>{failed}</b>"
     )
+
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message, state: FSMContext):
+    """Рассылка сообщения всем пользователям (только для админа)"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    await _broadcast(message, "/broadcast")
 
 
 # --- Баланс токенов (только для админа) ---

@@ -57,21 +57,37 @@ async def _save_user(telegram_id: int, **fields) -> User:
 
 
 async def ask_timezone(message: Message, state: FSMContext, flow: str):
+    await send_timezone_question(message.bot, message.chat.id, state, flow)
+
+
+async def send_timezone_question(bot, chat_id: int, state: FSMContext, flow: str):
     await state.update_data(flow=flow)
     await state.set_state(SettingsFlow.tz)
-    await message.answer(TZ_QUESTION, reply_markup=get_timezone_keyboard())
+    await bot.send_message(chat_id, TZ_QUESTION, reply_markup=get_timezone_keyboard())
 
 
-async def start_migration(message: Message, state: FSMContext):
-    """Разовое обновление профиля для пользователей старой версии"""
+def needs_migration(user) -> bool:
+    """Профиль из версии без часового пояса и времени утра"""
+    return bool(user and user.daily_calorie_target and (user.utc_offset_min is None or user.wake_hour is None))
+
+
+async def send_migration(bot, chat_id: int, state: FSMContext, pending_text: str = None):
+    """
+    Разовое обновление профиля для пользователей старой версии (запускает middlewares.UpdateGate).
+    pending_text — сообщение, с которым пользователь пришёл: разберём его после трёх вопросов.
+    """
     await state.clear()
-    await message.answer(
+    if pending_text:
+        await state.update_data(after_migration_text=pending_text)
+    await bot.send_message(
+        chat_id,
         "✨ <b>Я обновился!</b>\n\n"
         "Теперь я считаю белки, жиры, углеводы, клетчатку, сахар и жидкость, "
         "учитываю тренировки и твоё местное время.\n\n"
         "Ответь на 3 коротких вопроса — и можно продолжать."
+        + ("\n\n<i>Твоё сообщение я запомнил и разберу сразу после.</i>" if pending_text else "")
     )
-    await ask_timezone(message, state, 'migration')
+    await send_timezone_question(bot, chat_id, state, 'migration')
 
 
 def _local_time_text(offset: int) -> str:
@@ -164,13 +180,19 @@ async def process_migration_activity(callback: CallbackQuery, state: FSMContext)
             user.gender, user.weight, user.height, user.age, activity, user.goal or 'maintain'
         )
         await session.commit()
+    pending_text = (await state.get_data()).get('after_migration_text')
     await state.clear()
     await callback.message.edit_text(
         f"✅ Активность: <b>{nutrition.ACTIVITY_LABELS[activity]}</b>\n\n"
         f"<b>Твои новые нормы:</b>\n{nutrition.norms_text(nutrition.daily_norms(user))}\n\n"
-        "Всё готово! Можешь снова отправить, что съел(а) или как тренировался(лась)."
+        + ("Всё готово! Разбираю твоё сообщение..." if pending_text
+           else "Всё готово! Пиши, что съел(а) или как тренировался(лась), присылай фото или голосовое.")
     )
     await callback.message.answer("Главное меню:", reply_markup=get_main_menu())
+    if pending_text:
+        # Импорт здесь: ai_hub сам импортирует этот модуль
+        from handlers.ai_hub import run_analysis
+        await run_analysis(callback.message, state, user, pending_text, 'text')
 
 
 async def finish_onboarding(message: Message, state: FSMContext, telegram_id: int):

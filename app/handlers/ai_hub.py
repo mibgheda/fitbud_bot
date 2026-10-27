@@ -23,7 +23,7 @@ from keyboards.reply import (
     get_main_menu, MENU_BUTTONS, not_menu_button,
     get_ai_confirm_keyboard, get_saved_entries_keyboard, get_water_keyboard,
 )
-from handlers.settings import start_migration
+from handlers.settings import send_migration, needs_migration
 from utils import diary, nutrition
 from utils.daytime import local_now, utc_now
 from utils.limits import check_limit, log_ai, mark_added, MAX_VOICE_SECONDS
@@ -69,8 +69,9 @@ async def ensure_ready(message: Message, state: FSMContext, user_id: Optional[in
                 reply_markup=get_main_menu()
             )
             return None
-        if user.utc_offset_min is None or user.wake_hour is None:
-            await start_migration(message, state)
+        if needs_migration(user):
+            # Обычно сюда не доходит: обновление запускает middlewares.UpdateGate
+            await send_migration(message.bot, message.chat.id, state)
             return None
         user.last_active_at = utc_now()
         await session.commit()
