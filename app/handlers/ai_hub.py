@@ -1,1019 +1,460 @@
 """
-AI Hub - Единый обработчик всех типов сообщений (голос, фото, текст)
-с подтверждением перед сохранением
+AI-хаб: любое сообщение — текст, голос или фото — разбирает AI.
+
+Тип сообщения (еда, напитки, вода, тренировка) определяет AI, а не список слов.
+Результат показывается пользователю, сохраняется после «✅ Добавить».
+Защита от prompt injection — в utils/openai_helper.py (analyze_input).
 """
+import logging
+import os
+from datetime import datetime
+from html import escape
+from typing import Optional
+
 from aiogram import Router, F
-from aiogram.types import Message, Voice, PhotoSize, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from sqlalchemy import select, func
-from datetime import datetime, timedelta
-import os
-import logging
+from aiogram.types import Message, CallbackQuery, Voice, PhotoSize
+from sqlalchemy import select
 
-logger = logging.getLogger(__name__)
-
-from database.database import (
-    async_session, User, CalorieEntry, WorkoutEntry, AIInteraction, calc_today_start
-)
+from database.database import async_session, User
 from keyboards.reply import (
     get_main_menu, MENU_BUTTONS, not_menu_button,
-    get_ai_food_confirm_keyboard, get_ai_workout_confirm_keyboard
+    get_ai_confirm_keyboard, get_saved_entries_keyboard, get_water_keyboard,
 )
-from utils.openai_helper import (
-    transcribe_voice,
-    analyze_food_from_text,
-    analyze_food_from_photo,
-    analyze_workout_from_text,
-)
+from handlers.settings import start_migration
+from utils import diary, nutrition
+from utils.daytime import local_now, utc_now
+from utils.limits import check_limit, log_ai, mark_added, MAX_VOICE_SECONDS
+from utils.openai_helper import transcribe_voice, analyze_input, MAX_INPUT_CHARS
 
+logger = logging.getLogger(__name__)
 router = Router()
 
-# Директория для хранения медиа-файлов
+# Директория для временного хранения медиа-файлов (удаляются после анализа)
 MEDIA_DIR = "/app/media"
 os.makedirs(f"{MEDIA_DIR}/voice", exist_ok=True)
 os.makedirs(f"{MEDIA_DIR}/photos", exist_ok=True)
 
 
 class AIInput(StatesGroup):
-    """Состояния для AI-ввода"""
-    waiting_for_food_edit = State()
-    waiting_for_workout_edit = State()
-    waiting_for_workout_duration = State()
-    pending_food_confirmation = State()
-    pending_workout_confirmation = State()
-
-
-# ==================== Ключевые слова для классификации ====================
-
-FOOD_KEYWORDS = {
-    # Глаголы приёма пищи
-    'съел', 'съела', 'поел', 'поела', 'покушал', 'покушала',
-    'кушал', 'кушала', 'перекусил', 'перекусила',
-    'позавтракал', 'позавтракала', 'пообедал', 'пообедала',
-    'поужинал', 'поужинала', 'пила', 'выпил', 'выпила',
-    'допил', 'допила', 'жевал', 'жевала', 'наелся', 'наелась',
-    'объелся', 'объелась', 'закусил', 'закусила',
-    'попил', 'попила', 'глотнул', 'глотнула', 'хлебнул',
-    # Приёмы пищи
-    'завтрак', 'обед', 'ужин', 'перекус', 'полдник', 'ланч', 'бранч',
-    'трапеза',
-    # Супы и горячее
-    'суп', 'борщ', 'щи', 'солянка', 'окрошка', 'уха', 'харчо',
-    'рассольник', 'бульон', 'похлёбка', 'минестроне',
-    # Каши и гарниры
-    'каша', 'овсянка', 'перловка', 'пшёнка', 'булгур', 'кускус',
-    'киноа', 'макароны', 'паста', 'лапша', 'спагетти', 'пюре',
-    'гречка', 'гречку',
-    # Мясо и птица
-    'мясо', 'курица', 'курицу', 'говядина', 'говядину', 'свинина', 'свинину',
-    'баранина', 'индейка', 'индейку', 'утка', 'утку',
-    'котлета', 'котлету', 'котлеты', 'стейк', 'отбивная', 'отбивную',
-    'шашлык', 'бифштекс', 'фарш',
-    'сосиска', 'сосиски', 'колбаса', 'колбасу', 'ветчина', 'ветчину',
-    'бекон', 'сало',
-    # Рыба и морепродукты
-    'рыба', 'рыбу', 'лосось', 'сёмга', 'сёмгу', 'форель',
-    'тунец', 'треска', 'треску', 'скумбрия', 'скумбрию',
-    'селёдка', 'селёдку', 'креветки', 'кальмар', 'мидии',
-    'суши', 'роллы',
-    # Яйца и молочка
-    'яйцо', 'яйца', 'омлет', 'яичница', 'глазунья',
-    'творог', 'йогурт', 'кефир', 'молоко', 'ряженка',
-    'сметана', 'сметану', 'сыр', 'масло', 'сливки',
-    'сырники', 'запеканка', 'запеканку',
-    # Выпечка и хлеб
-    'хлеб', 'булка', 'булку', 'батон', 'лаваш', 'лепёшка', 'круассан',
-    'тост', 'бутерброд', 'сэндвич', 'блины', 'оладьи',
-    'пирог', 'пирожок', 'пирожки', 'пицца', 'пиццу',
-    'чебурек', 'самса', 'самсу', 'беляш',
-    # Фаст-фуд
-    'бургер', 'гамбургер', 'хот-дог', 'шаурма', 'шаурму',
-    'шаверма', 'шаверму', 'донер', 'наггетсы', 'чипсы', 'попкорн',
-    # Национальные блюда
-    'плов', 'пельмени', 'вареники', 'манты', 'хинкали',
-    'долма', 'долму', 'лагман',
-    # Салаты и овощи
-    'салат', 'оливье', 'цезарь', 'винегрет', 'овощи',
-    'помидор', 'помидоры', 'огурец', 'огурцы',
-    'морковь', 'капуста', 'капусту', 'баклажан', 'кабачок',
-    'свёкла', 'свёклу', 'брокколи', 'шпинат', 'авокадо',
-    'картошка', 'картошку', 'картофель',
-    # Фрукты и ягоды
-    'фрукт', 'фрукты', 'яблоко', 'яблоки', 'банан', 'бананы',
-    'апельсин', 'мандарин', 'груша', 'грушу', 'виноград',
-    'арбуз', 'дыня', 'дыню', 'клубника', 'клубнику',
-    'черника', 'чернику', 'малина', 'малину',
-    'вишня', 'персик', 'абрикос', 'слива', 'сливу',
-    'киви', 'манго', 'ананас', 'гранат',
-    # Сладости и десерты
-    'торт', 'пирожное', 'кекс', 'маффин', 'шоколад', 'шоколадка', 'шоколадку',
-    'конфета', 'конфеты', 'конфету', 'конфетка', 'конфетку',
-    'печенье', 'печеньку', 'вафли', 'вафля', 'вафлю', 'мороженое',
-    'зефир', 'мармелад', 'халва', 'халву', 'пахлава', 'пахлаву',
-    'тирамису', 'чизкейк', 'панкейк', 'панкейки',
-    'пастила', 'пастилу', 'ирис', 'ириска', 'ириску',
-    'леденец', 'карамель', 'карамельку', 'драже',
-    # Бренды сладостей (часто пишут без глагола)
-    'баунти', 'сникерс', 'марс', 'твикс', 'кит-кат', 'киткат',
-    'милка', 'алёнка', 'алёнку', 'рафаэлло', 'ферреро',
-    'нутелла', 'нутеллу', 'орео',
-    # Орехи и снеки
-    'орехи', 'орешки', 'арахис', 'миндаль', 'кешью', 'фисташки',
-    'семечки', 'сухарики', 'крекер', 'батончик', 'батончика',
-    'гранола', 'гранолу', 'мюсли', 'сухофрукты',
-    'изюм', 'курага', 'курагу', 'чернослив',
-    'финики', 'финик',
-    # Соусы и приправы (контекст еды)
-    'кетчуп', 'майонез', 'майонезом', 'горчица', 'горчицу',
-    'соус', 'соусом', 'аджика', 'аджику',
-    # Крупы и бобовые (дополнение)
-    'рис', 'фасоль', 'горох', 'чечевица', 'чечевицу', 'нут',
-    'пшено', 'манка', 'манку',
-    # Дополнительные блюда
-    'голубцы', 'драники', 'сырник', 'блинчик', 'блинчики',
-    'рагу', 'жаркое', 'гуляш', 'азу', 'бефстроганов',
-    'шницель', 'тефтели', 'фрикадельки',
-    'окорочок', 'крылышки', 'грудка', 'грудку', 'филе',
-    'ребрышки', 'рёбрышки',
-    'сардельки', 'сарделька',
-    'пельмень', 'вареник', 'хинкали',
-    'лазанья', 'лазанью', 'равиоли', 'ньокки',
-    'ризотто', 'карбонара', 'карбонару',
-    # Закуски
-    'бутер', 'канапе', 'тартар', 'брускетта', 'брускетту',
-    'хумус', 'гуакамоле',
-    # Молочка (дополнение)
-    'простокваша', 'простоквашу', 'снежок', 'айран',
-    'мацони', 'тан', 'варенец',
-    # Напитки
-    'сок', 'компот', 'кофе', 'какао', 'лимонад',
-    'кола', 'колу', 'фанта', 'фанту', 'спрайт', 'квас',
-    'морс', 'смузи', 'коктейль', 'латте', 'капучино',
-    'эспрессо', 'американо', 'раф', 'матча', 'матчу',
-    'чай', 'кисель',
-    # Алкоголь
-    'пиво', 'вино', 'водка', 'водку', 'виски',
-    'коньяк', 'шампанское', 'ром', 'текила', 'текилу',
-    'ликёр', 'настойка', 'настойку', 'сидр',
-    # Спортпит
-    'протеин', 'гейнер', 'изолят', 'bcaa', 'бцаа',
-    # Единицы и контекст
-    'калори', 'ккал', 'порция', 'порцию', 'кусок', 'кусочек',
-    'ложка', 'ложку', 'стакан', 'чашка', 'чашку',
-    'тарелка', 'тарелку', 'миска', 'миску',
-    'грамм', 'граммов',
-}
-
-WORKOUT_KEYWORDS = {
-    # Глаголы тренировки
-    'тренировался', 'тренировалась', 'потренировался', 'потренировалась',
-    'занимался', 'занималась', 'позанимался', 'позанималась',
-    'бегал', 'бегала', 'пробежал', 'пробежала', 'побегал', 'побегала',
-    'плавал', 'плавала', 'проплыл', 'проплыла', 'поплавал', 'поплавала',
-    'катался', 'каталась', 'покатался', 'покаталась',
-    'ходил', 'ходила', 'прошёл', 'прошла', 'погулял', 'погуляла',
-    'гулял', 'гуляла', 'шагал', 'шагала', 'нашагал', 'нашагала',
-    'прыгал', 'прыгала', 'попрыгал', 'попрыгала',
-    'качал', 'качала', 'покачал', 'покачала',
-    'поднимал', 'поднимала', 'жал', 'выжал', 'выжала',
-    'тянул', 'тянула', 'потянул', 'потянула',
-    'приседал', 'приседала', 'присел', 'присела',
-    'отжимался', 'отжималась', 'отжался', 'отжалась',
-    'подтягивался', 'подтягивалась', 'подтянулся', 'подтянулась',
-    'растягивался', 'растягивалась', 'потянулся', 'потянулась',
-    'разминался', 'разминалась', 'размялся', 'размялась',
-    'вспотел', 'вспотела', 'упарился', 'упарилась',
-    'боксировал', 'боксировала', 'спарринговал',
-    'танцевал', 'танцевала', 'потанцевал', 'потанцевала',
-    'крутил педали', 'крутила педали',
-    # Виды спорта и тренировок
-    'тренировка', 'тренировку', 'тренинг', 'воркаут',
-    'пробежка', 'пробежку', 'забег', 'марафон', 'полумарафон', 'спринт',
-    'плавание', 'заплыв', 'аквааэробика',
-    'йога', 'йогу', 'пилатес', 'стретчинг', 'растяжка', 'растяжку',
-    'зарядка', 'зарядку', 'разминка', 'разминку', 'заминка', 'заминку',
-    'кроссфит', 'фитнес', 'аэробика', 'аэробику',
-    'степпер', 'танцы', 'зумба', 'зумбу',
-    'бокс', 'кикбоксинг', 'тайбо',
-    'единоборства', 'борьба', 'борьбу', 'карате', 'тхэквондо',
-    'дзюдо', 'самбо', 'айкидо',
-    'скалолазание', 'боулдеринг',
-    'велосипед', 'велотренажёр', 'велопрогулка', 'велопрогулку',
-    'велик', 'сайкл',
-    'эллипс', 'орбитрек', 'эллиптический',
-    'беговая дорожка', 'дорожка', 'дорожке',
-    'гребля', 'гребной', 'каноэ', 'каяк',
-    'скакалка', 'скакалку', 'скиппинг',
-    'обруч', 'хулахуп',
-    'планка', 'планку', 'берпи', 'бёрпи',
-    'кранчи', 'скручивания',
-    'кардио', 'силовая', 'силовую',
-    'функциональная', 'функциональную',
-    'интервальная', 'интервальную',
-    'табата', 'табату',
-    'круговая', 'круговую',
-    'сплит', 'фулбоди',
-    'суперсет', 'дропсет', 'трисет',
-    # Части тела / группы мышц
-    'пресс', 'ноги', 'руки', 'спина', 'спину',
-    'грудь', 'плечи', 'бицепс', 'трицепс',
-    'дельты', 'квадрицепс', 'ягодицы', 'икры',
-    'трапеция', 'трапецию', 'широчайшие', 'предплечья',
-    # Спортзал и оборудование
-    'качалка', 'качалке', 'качалку',
-    'тренажёр', 'тренажёре', 'тренажёрка', 'тренажерка', 'тренажерке',
-    'штанга', 'штангу', 'штангой',
-    'гантели', 'гантелями', 'гантель',
-    'гиря', 'гирю', 'гири', 'гирями',
-    'тренажёрный', 'спортзал', 'спортзале',
-    'фитнес-клуб', 'фитнес-клубе',
-    'турник', 'турнике', 'брусья', 'брусьях',
-    'петли', 'резинка', 'резинку', 'резинкой',
-    'эспандер', 'эспандером',
-    # Зимние виды
-    'лыжи', 'лыжах', 'коньки', 'коньках',
-    'сноуборд', 'сноуборде', 'хоккей',
-    # Игровые виды
-    'футбол', 'баскетбол', 'волейбол',
-    'теннис', 'бадминтон', 'сквош', 'гольф',
-    # Единицы и контекст
-    'подход', 'подхода', 'подходов',
-    'повторение', 'повторений', 'повтор', 'повторов',
-    'раунд', 'раунда', 'раундов',
-    'дистанция', 'дистанцию', 'темп',
-    'пульс',
-}
-
-WATER_KEYWORDS = {
-    'вода', 'воду', 'воды', 'водичка', 'водичку',
-    'стакан воды', 'выпил воды', 'выпила воды',
-    'попил воды', 'попила воды',
-    'пью воду', 'водички',
-}
-
-import re
-
-def parse_water_amount(text: str) -> int:
-    """
-    Парсит количество воды из текста. Возвращает мл.
-    Примеры: '100 мл воды' → 100, '2 стакана воды' → 500, 'стакан воды' → 250,
-             '100 гр воды' → 100, '0.5 литра воды' → 500, 'воду' → 250 (по умолчанию)
-    """
-    text_lower = text.lower().strip()
-
-    # Литры: "0.5 литра", "1 л воды", "1.5 литра"
-    m = re.search(r'(\d+[.,]?\d*)\s*(?:л\b|литр)', text_lower)
-    if m:
-        liters = float(m.group(1).replace(',', '.'))
-        return int(liters * 1000)
-
-    # Миллилитры: "100 мл", "250мл", "100 гр воды" (гр воды = мл)
-    m = re.search(r'(\d+)\s*(?:мл|грамм|гр\b|г\b)', text_lower)
-    if m:
-        return int(m.group(1))
-
-    # Стаканы: "2 стакана", "3 стакана воды"
-    m = re.search(r'(\d+)\s*стакан', text_lower)
-    if m:
-        return int(m.group(1)) * 250
-
-    # Просто число перед "воды/воду": "200 воды"
-    m = re.search(r'(\d+)\s*вод', text_lower)
-    if m:
-        val = int(m.group(1))
-        if val >= 50:  # скорее всего мл
-            return val
-
-    # По умолчанию — 1 стакан (250 мл)
-    return 250
-
-
-# ==================== Классификация и валидация ====================
-
-def is_water_input(text: str) -> bool:
-    """Определяет, является ли текст записью воды"""
-    text_lower = text.lower()
-    # Только если это именно про воду, а не "минеральная вода с лимоном" (еда)
-    return any(kw in text_lower for kw in WATER_KEYWORDS)
-
-
-def is_food_input(text: str) -> bool:
-    """Определяет, является ли текст вводом еды"""
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in FOOD_KEYWORDS)
-
-
-def is_workout_input(text: str) -> bool:
-    """Определяет, является ли текст вводом тренировки"""
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in WORKOUT_KEYWORDS)
-
-
-def validate_food_data(food_data: dict) -> str | None:
-    """Валидация данных о еде. Возвращает сообщение об ошибке или None."""
-    calories = food_data.get('calories', 0)
-    protein = food_data.get('protein', 0)
-    fats = food_data.get('fats', 0)
-    carbs = food_data.get('carbs', 0)
-
-    # Разрешаем 0 ккал для воды
-    if calories < 1 and food_data.get('meal_type') != 'water':
-        return "Калорийность не может быть меньше 1 ккал."
-    if calories > 5000:
-        return (
-            f"Калорийность <b>{calories} ккал</b> выглядит нереалистично "
-            "для одного приёма пищи (максимум 5000 ккал)."
-        )
-    if protein > 300:
-        return f"Белки <b>{protein:.0f} г</b> — слишком много для одного приёма пищи."
-    if fats > 300:
-        return f"Жиры <b>{fats:.0f} г</b> — слишком много для одного приёма пищи."
-    if carbs > 500:
-        return f"Углеводы <b>{carbs:.0f} г</b> — слишком много для одного приёма пищи."
-    return None
-
-
-def validate_workout_data(workout_data: dict) -> str | None:
-    """Валидация данных о тренировке. Возвращает сообщение об ошибке или None."""
-    duration = workout_data.get('duration', 0)
-    calories = workout_data.get('calories_burned', 0)
-
-    if duration and duration > 600:
-        return f"Длительность <b>{duration} мин</b> — слишком много (максимум 600 мин)."
-    if calories and calories > 5000:
-        return (
-            f"Сожжённые калории <b>{calories} ккал</b> — "
-            "слишком много для одной тренировки (максимум 5000 ккал)."
-        )
-    return None
-
-
-# ==================== Вспомогательные функции ====================
-
-async def get_user_context(user_id: int) -> dict:
-    """Получение контекста пользователя для AI + обновление last_active_at"""
-    async with async_session() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == user_id)
-        )
-        user = result.scalar_one_or_none()
-        if user:
-            user.last_active_at = datetime.now()
-            await session.commit()
-            return {
-                'age': user.age,
-                'gender': user.gender,
-                'weight': user.weight,
-                'height': user.height,
-                'goal': user.goal,
-                'activity_level': user.activity_level,
-                'daily_target': user.daily_calorie_target
-            }
-        return {}
-
-
-async def check_user_registered(message: Message) -> bool:
-    """Проверка, что пользователь зарегистрирован и настроил профиль"""
-    async with async_session() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == message.from_user.id)
-        )
-        user = result.scalar_one_or_none()
-        if not user or not user.daily_calorie_target:
-            await message.answer(
-                "Сначала настрой профиль командой /start, "
-                "чтобы использовать AI-функции.",
-                reply_markup=get_main_menu()
-            )
-            return False
-        return True
-
-
-async def show_food_confirmation(message: Message, state: FSMContext,
-                                  food_data: dict, source_type: str,
-                                  file_path: str = None, original_text: str = None):
-    """Показать распознанную еду с кнопками подтверждения"""
-    # Валидация
-    error = validate_food_data(food_data)
-    if error:
-        await message.answer(
-            f"⚠️ <b>Данные выглядят нереалистично:</b>\n{error}\n\n"
-            "Пожалуйста, опиши ещё раз что и сколько ты съел(а)."
-        )
-        return
-
-    await state.update_data(
-        pending_food=food_data,
-        pending_food_source_type=source_type,
-        pending_food_file_path=file_path,
-        pending_food_text=original_text
-    )
-    await state.set_state(AIInput.pending_food_confirmation)
-
-    confidence_emoji = "✅" if food_data.get('confidence', 0) > 0.8 else "⚠️"
-
-    response = (
-        f"{confidence_emoji} <b>AI распознал:</b>\n\n"
-        f"🍽 <b>{food_data['food_name']}</b>\n"
-        f"📊 Калории: <b>{food_data['calories']} ккал</b>\n"
-        f"Б/Ж/У: {food_data.get('protein', 0):.1f} / "
-        f"{food_data.get('fats', 0):.1f} / "
-        f"{food_data.get('carbs', 0):.1f} г\n"
-    )
-
-    if food_data.get('items'):
-        items_text = "\n".join([f"  • {item}" for item in food_data['items']])
-        response += f"\n<b>Состав:</b>\n{items_text}\n"
-
-    if food_data.get('notes'):
-        notes = food_data['notes'].replace('<', '&lt;').replace('>', '&gt;')
-        response += f"\n💡 <i>{notes}</i>"
-
-    await message.answer(response, reply_markup=get_ai_food_confirm_keyboard())
-
-
-async def show_workout_confirmation(message: Message, state: FSMContext,
-                                     workout_data: dict, source_type: str,
-                                     original_text: str = None):
-    """Показать распознанную тренировку с кнопками подтверждения"""
-    # Валидация
-    error = validate_workout_data(workout_data)
-    if error:
-        await message.answer(
-            f"⚠️ <b>Данные выглядят нереалистично:</b>\n{error}\n\n"
-            "Пожалуйста, опиши тренировку ещё раз."
-        )
-        return
-
-    await state.update_data(
-        pending_workout=workout_data,
-        pending_workout_source_type=source_type,
-        pending_workout_text=original_text
-    )
-    await state.set_state(AIInput.pending_workout_confirmation)
-
-    intensity_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}
-
-    response = (
-        f"🤖 <b>AI распознал:</b>\n\n"
-        f"🏃 <b>{workout_data['workout_type']}</b>\n"
-        f"⏱ Длительность: <b>{workout_data['duration']}</b> мин\n"
-        f"🔥 Сожжено: <b>~{workout_data.get('calories_burned', 0)}</b> ккал\n"
-        f"{intensity_emoji.get(workout_data.get('intensity', 'medium'), '⚪')} "
-        f"Интенсивность: {workout_data.get('intensity', 'средняя')}\n"
-    )
-
-    if workout_data.get('distance'):
-        response += f"📏 Дистанция: {workout_data['distance']} км\n"
-    if workout_data.get('pace'):
-        response += f"⚡️ Темп: {workout_data['pace']}\n"
-    if workout_data.get('notes'):
-        response += f"\n💡 <i>{workout_data['notes']}</i>"
-
-    await message.answer(response, reply_markup=get_ai_workout_confirm_keyboard())
-
-
-async def analyze_and_show_food(message: Message, state: FSMContext,
-                                 text: str, source_type: str, file_path: str = None):
-    """Анализ еды через AI и показ подтверждения"""
-    try:
-        user_context = await get_user_context(message.from_user.id)
-        food_data = await analyze_food_from_text(text, user_context)
-        await show_food_confirmation(message, state, food_data, source_type, file_path, text)
-    except Exception as e:
-        logger.exception("Ошибка анализа еды")
-        await message.answer("❌ Не удалось проанализировать. Попробуй ещё раз или опиши иначе.")
-
-
-async def analyze_and_show_workout(message: Message, state: FSMContext,
-                                    text: str, source_type: str):
-    """Анализ тренировки через AI и показ подтверждения (или запрос длительности)"""
-    try:
-        workout_data = await analyze_workout_from_text(text)
-
-        if not workout_data.get('duration') or workout_data['duration'] == 0:
-            # Нужно уточнить длительность
-            await state.update_data(
-                pending_workout=workout_data,
-                pending_workout_source_type=source_type,
-                pending_workout_text=text
-            )
-            workout_name = workout_data.get('workout_type', 'Тренировка')
-            await message.answer(
-                f"🤖 Распознал: <b>{workout_name}</b>\n\n"
-                "Сколько минут длилась тренировка? (введи число)"
-            )
-            await state.set_state(AIInput.waiting_for_workout_duration)
-        else:
-            await show_workout_confirmation(message, state, workout_data, source_type, text)
-    except Exception as e:
-        logger.exception("Ошибка анализа тренировки")
-        await message.answer("❌ Не удалось проанализировать. Попробуй ещё раз или опиши иначе.")
-
-
-async def save_food_to_db(user_id: int, food_data: dict, source_type: str,
-                           file_path: str = None, original_text: str = None) -> int:
-    """Сохранение еды в БД"""
-    async with async_session() as session:
-        entry = CalorieEntry(
-            user_id=user_id,
-            food_name=food_data['food_name'],
-            calories=food_data['calories'],
-            protein=food_data.get('protein', 0),
-            carbs=food_data.get('carbs', 0),
-            fats=food_data.get('fats', 0),
-            meal_type=food_data.get('meal_type', 'snack'),
-            source_type=source_type,
-            source_data={'original_text': original_text, 'file_path': file_path},
-            ai_confidence=food_data.get('confidence', 0),
-            ai_notes=food_data.get('notes', '')
-        )
-        session.add(entry)
-        await session.flush()
-
-        usage = food_data.get('_usage', {})
-        ai_log = AIInteraction(
-            user_id=user_id,
-            interaction_type='food_analysis',
-            input_type=source_type,
-            input_data=original_text,
-            input_file_path=file_path,
-            ai_response=food_data,
-            ai_model=usage.get('model'),
-            ai_confidence=food_data.get('confidence', 0),
-            prompt_tokens=usage.get('prompt_tokens'),
-            completion_tokens=usage.get('completion_tokens'),
-            total_tokens=usage.get('total_tokens'),
-            created_entry_type='calorie_entry',
-            created_entry_id=entry.id
-        )
-        session.add(ai_log)
-        await session.commit()
-        return entry.id
-
-
-async def save_workout_to_db(user_id: int, workout_data: dict,
-                              source_type: str, original_text: str = None) -> int:
-    """Сохранение тренировки в БД"""
-    async with async_session() as session:
-        entry = WorkoutEntry(
-            user_id=user_id,
-            workout_type=workout_data['workout_type'],
-            duration=workout_data['duration'],
-            calories_burned=workout_data.get('calories_burned', 0),
-            notes=workout_data.get('notes', ''),
-            source_type=source_type,
-            intensity=workout_data.get('intensity'),
-            distance=workout_data.get('distance'),
-            pace=workout_data.get('pace'),
-            ai_confidence=workout_data.get('confidence', 0)
-        )
-        session.add(entry)
-        await session.flush()
-
-        usage = workout_data.get('_usage', {})
-        ai_log = AIInteraction(
-            user_id=user_id,
-            interaction_type='workout_analysis',
-            input_type=source_type,
-            input_data=original_text,
-            ai_response=workout_data,
-            ai_model=usage.get('model'),
-            ai_confidence=workout_data.get('confidence', 0),
-            prompt_tokens=usage.get('prompt_tokens'),
-            completion_tokens=usage.get('completion_tokens'),
-            total_tokens=usage.get('total_tokens'),
-            created_entry_type='workout_entry',
-            created_entry_id=entry.id
-        )
-        session.add(ai_log)
-        await session.commit()
-        return entry.id
-
-
-async def record_water(message: Message, state: FSMContext, glasses: int = None, ml: int = None):
-    """Записать воду и показать дневной счётчик.
-
-    glasses — кол-во стаканов (кнопка меню).
-    ml — миллилитры (текстовый ввод).
-    Если ничего не передано — парсим из текста сообщения.
-    """
-    user_id = message.from_user.id
-
-    if ml is None and glasses is not None:
-        ml = glasses * 250
-    elif ml is None:
-        ml = parse_water_amount(message.text or '')
-
-    # food_name отражает реальный объём
-    if ml % 250 == 0 and ml > 0:
-        label = f"💧 Вода ({ml // 250} ст. / {ml} мл)"
-    else:
-        label = f"💧 Вода ({ml} мл)"
-
-    async with async_session() as session:
-        entry = CalorieEntry(
-            user_id=user_id,
-            food_name=label,
-            calories=0,
-            protein=0,
-            carbs=0,
-            fats=0,
-            meal_type='water',
-            source_type='text_ai',
-        )
-        session.add(entry)
-
-        # Считаем общий объём воды за сегодня
-        user_result = await session.execute(
-            select(User).where(User.telegram_id == user_id)
-        )
-        user = user_result.scalar_one_or_none()
-        today_start = calc_today_start(user.current_day_start if user else None)
-
-        # Суммируем мл по food_name (парсим из записей)
-        water_entries = await session.execute(
-            select(CalorieEntry.food_name)
-            .where(CalorieEntry.user_id == user_id)
-            .where(CalorieEntry.meal_type == 'water')
-            .where(CalorieEntry.created_at >= today_start)
-        )
-        existing_entries = water_entries.scalars().all()
-
-        await session.commit()
-
-    # Считаем мл из уже записанных + текущая
-    total_ml = ml
-    for fname in existing_entries:
-        m = re.search(r'(\d+)\s*мл', fname)
-        if m:
-            total_ml += int(m.group(1))
-        else:
-            total_ml += 250  # старые записи без мл — считаем стакан
-
-    target_ml = 2000
-    progress_glasses = min(8, total_ml // 250)
-    bar = "💧" * progress_glasses + "💨" * (8 - progress_glasses)
-
-    await message.answer(
-        f"✅ <b>Записано: {ml} мл воды</b>\n\n"
-        f"{bar}\n"
-        f"За сегодня: <b>{total_ml}</b> / {target_ml} мл",
-        reply_markup=get_main_menu()
-    )
+    """Состояния AI-ввода"""
+    pending_confirmation = State()  # показан результат — ждём «Добавить», «Изменить» или уточнение текстом
+    waiting_for_edit = State()  # нажали «Изменить» — ждём описание
+    waiting_for_duration = State()  # AI не понял длительность тренировки
 
 
 NOT_RECOGNIZED_TEXT = (
-    "❌ <b>Запрос не распознан</b>\n\n"
-    "Я умею записывать только еду и тренировки. Попробуй так:\n\n"
-    "🍽 <b>Еда:</b>\n"
-    '<i>"Съел борщ с хлебом и котлету"</i>\n'
-    '<i>"Два яйца и кофе с молоком"</i>\n'
-    '<i>"Бургер, картошка фри и кола"</i>\n\n'
-    "🏃 <b>Тренировка:</b>\n"
-    '<i>"Пробежал 5 км за 30 минут"</i>\n'
-    '<i>"Час в тренажёрном зале"</i>\n'
-    '<i>"Йога 45 минут"</i>\n\n'
-    "Также можно отправить фото еды или голосовое сообщение."
+    "🤔 <b>Не нашёл здесь еды, напитков или тренировки</b>\n\n"
+    "Я веду дневник питания и тренировок. Попробуй так:\n\n"
+    "🍽 <i>«Борщ с хлебом и котлета»</i>\n"
+    "☕ <i>«Капучино и круассан»</i>\n"
+    "💧 <i>«Выпила 0,5 л воды»</i>\n"
+    "🏃 <i>«Пробежал 5 км за 30 минут»</i>\n\n"
+    "Можно прислать фото еды или голосовое."
 )
 
 
-# ==================== Кнопка «Быстрый ввод» ====================
+# ==================== Вспомогательные ====================
+
+async def ensure_ready(message: Message, state: FSMContext, user_id: Optional[int] = None) -> Optional[User]:
+    """Пользователь с настроенным профилем; иначе — отправить настраивать"""
+    user_id = user_id or message.from_user.id
+    async with async_session() as session:
+        user = (await session.execute(select(User).where(User.telegram_id == user_id))).scalar_one_or_none()
+        if not user or not user.daily_calorie_target:
+            await message.answer(
+                "Сначала настрой профиль командой /start, чтобы пользоваться дневником.",
+                reply_markup=get_main_menu()
+            )
+            return None
+        if user.utc_offset_min is None or user.wake_hour is None:
+            await start_migration(message, state)
+            return None
+        user.last_active_at = utc_now()
+        await session.commit()
+        return user
+
+
+def _user_context(user: User) -> dict:
+    return {'local_time': local_now(user).strftime('%H:%M'), 'weight': user.weight}
+
+
+def _result_summary(result: dict) -> str:
+    """Прошлый разбор одной строкой — контекст для уточнения"""
+    parts = [f"{item['name']} ({item['calories']} ккал)" for item in result.get('items', [])]
+    parts += [f"тренировка: {w['name']}, {w['duration_min']} мин" for w in result.get('workouts', [])]
+    return "; ".join(parts) or "ничего"
+
+
+async def _safe_edit(message: Message, text: str, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest:
+        await message.answer(text, reply_markup=reply_markup)
+
+
+def _preview_text(user: User, result: dict, editing: bool) -> Optional[str]:
+    """Текст предпросмотра или None, если данные нереалистичны"""
+    norms = nutrition.daily_norms(user)
+    lines = ["✏️ <b>Исправленная запись:</b>" if editing else "🤖 <b>Распознано:</b>", ""]
+
+    if result['items']:
+        totals = nutrition.meal_totals(result['items'])
+        if totals['calories'] > 5000 or totals['protein'] > 300 or totals['fats'] > 300 or totals['carbs'] > 500:
+            return None
+        for item in result['items']:
+            line = f"• {escape(item['name'])} — {item['calories']} ккал"
+            if item['liquid_type'] != 'none' and item['liquid_ml']:
+                line += f", {item['liquid_ml']} мл"
+            lines.append(line)
+        lines.append("")
+        lines.append(nutrition.meal_report(totals, norms))
+
+    if result['workouts']:
+        if result['items']:
+            lines.append("")
+        weight = user.weight or 70
+        for workout in result['workouts']:
+            lines.append(f"🏃 <b>{escape(workout['name'])}</b>, {workout['duration_min']} мин"
+                         + (f", {nutrition.fmt(workout['distance_km'])} км" if workout['distance_km'] else ""))
+            lines.append(f"   🔥 {nutrition.workout_formula(workout['met'], weight, workout['duration_min'])} ккал")
+
+    if result['confidence'] < 0.6:
+        lines.append("\n⚠️ <i>Оценка приблизительная — уточни порцию, если знаешь.</i>")
+    lines.append("\n<i>Можно уточнить текстом, например: «порция была больше».</i>")
+    return "\n".join(lines)
+
+
+async def show_preview(message: Message, state: FSMContext, user: User):
+    data = await state.get_data()
+    pending = data['pending']
+    text = _preview_text(user, pending['result'], bool(pending.get('editing')))
+    if text is None:
+        await state.set_state(AIInput.pending_confirmation)
+        await message.answer(
+            "⚠️ <b>Цифры выглядят нереалистично для одного приёма пищи.</b>\n"
+            "Опиши, пожалуйста, ещё раз, что и сколько было."
+        )
+        return
+    await state.set_state(AIInput.pending_confirmation)
+    await message.answer(text, reply_markup=get_ai_confirm_keyboard(editing=bool(pending.get('editing'))))
+
+
+async def _ask_missing_duration(message: Message, state: FSMContext) -> bool:
+    """Спросить длительность первой тренировки без неё. True — если спросили"""
+    data = await state.get_data()
+    for index, workout in enumerate(data['pending']['result']['workouts']):
+        if not workout['duration_min']:
+            await state.update_data(duration_index=index)
+            await state.set_state(AIInput.waiting_for_duration)
+            await message.answer(f"⏱ Сколько минут длилась тренировка «{escape(workout['name'])}»? Напиши число.")
+            return True
+    return False
+
+
+async def run_analysis(message: Message, state: FSMContext, user: User, text: Optional[str],
+                       input_type: str, image_path: Optional[str] = None,
+                       check: bool = True, correction: bool = False):
+    """Разобрать сообщение через AI и показать результат"""
+    if check:
+        limit_message = await check_limit(user, input_type)
+        if limit_message:
+            await message.answer(limit_message, reply_markup=get_main_menu())
+            return
+
+    data = await state.get_data()
+    pending = data.get('pending') if correction else None
+    editing = pending.get('editing') if pending else None
+
+    prompt_text = text
+    if pending:
+        original = pending.get('text')
+        prompt_text = (
+            (f"Исходное сообщение: {original}\n" if original else "")
+            + f"Предыдущий разбор: {_result_summary(pending['result'])}\n"
+            + f"Исправление пользователя: {text}\n"
+            + "Верни полный исправленный разбор."
+        )
+
+    try:
+        result, usage = await analyze_input(prompt_text, image_path, _user_context(user))
+    except Exception:
+        logger.exception("Ошибка анализа")
+        await log_ai(user.telegram_id, 'analysis', input_type, text, status='error')
+        await message.answer("❌ Не удалось разобрать сообщение. Попробуй ещё раз чуть позже.")
+        return
+
+    interaction_id = await log_ai(user.telegram_id, 'analysis', input_type, text, result, usage)
+
+    if not result['items'] and not result['workouts']:
+        if pending:
+            await message.answer("🤔 Не понял исправление. Опиши, пожалуйста, иначе — или нажми «✅» под записью.")
+        else:
+            await message.answer(NOT_RECOGNIZED_TEXT, reply_markup=get_main_menu())
+        return
+
+    # Только вода — записываем сразу, без подтверждения
+    if not pending and not result['workouts'] and nutrition.is_water_only(result['items']):
+        saved = await diary.save_result(user, result, input_type, text, result['confidence'])
+        await mark_added(interaction_id, 'calorie_entry', saved[0][1])
+        await state.clear()
+        ml = sum(item['liquid_ml'] for item in result['items'])
+        await message.answer(
+            f"✅ <b>Записано: {ml} мл воды</b>\n\n{await diary.liquid_brief_text(user)}",
+            reply_markup=get_saved_entries_keyboard(saved)
+        )
+        return
+
+    await state.update_data(pending={
+        'result': result,
+        'input_type': input_type,
+        'text': (pending.get('text') if pending else None) or (text if not image_path else (text or 'фото')),
+        'interaction_id': interaction_id,
+        'editing': editing,
+    })
+    if await _ask_missing_duration(message, state):
+        return
+    await show_preview(message, state, user)
+
+
+# ==================== Кнопки меню ====================
 
 @router.message(F.text == "✨ Быстрый ввод")
 async def quick_input(message: Message, state: FSMContext):
-    """Инструкция по AI-вводу"""
     await state.clear()
     await message.answer(
-        "✨ <b>Быстрый ввод с помощью AI</b>\n\n"
-        "Просто отправь мне информацию в любом формате:\n\n"
-        "🍽 <b>Еда</b> — напиши, сфотографируй или надиктуй:\n"
-        '• <i>"Съел борщ с хлебом и котлету"</i>\n'
-        '• <i>"Овсянка с бананом и мёдом"</i>\n'
-        '• <i>"Два куска пиццы и стакан сока"</i>\n'
-        "• Фото тарелки с едой\n"
-        "• Голосовое сообщение\n\n"
-        "🏃 <b>Тренировка</b> — напиши или надиктуй:\n"
-        '• <i>"Пробежал 5 км за 30 минут"</i>\n'
-        '• <i>"Час в тренажёрном зале, жим и приседания"</i>\n'
-        '• <i>"Плавание 45 минут"</i>\n'
-        '• <i>"Йога 30 минут"</i>\n\n'
-        "AI проанализирует и предложит добавить запись.\n"
-        "Ты сможешь <b>подтвердить</b> или <b>изменить</b> данные перед сохранением."
+        "✨ <b>Быстрый ввод</b>\n\n"
+        "Пиши как удобно — ИИ сам поймёт, что это:\n\n"
+        "🍽 <i>«Овсянка с бананом и кофе с молоком»</i>\n"
+        "🥗 <i>«Обед: борщ, 2 куска хлеба, компот»</i>\n"
+        "🍷 <i>«Два бокала вина и сырная тарелка»</i>\n"
+        "💧 <i>«Выпила 300 мл воды»</i>\n"
+        "🏃 <i>«Пробежал 5 км за 30 минут»</i>\n"
+        "🏋️ <i>«Час силовой в зале»</i>\n\n"
+        "📸 Фото тарелки · 🎤 голосовое до 1 минуты\n\n"
+        "Перед сохранением покажу калории, белки, жиры, углеводы, клетчатку, сахар и жидкость — "
+        "можно <b>добавить</b> или <b>исправить</b>."
     )
 
 
-# ==================== Кнопка «Вода» ====================
-
 @router.message(F.text == "💧 Вода")
 async def water_button(message: Message, state: FSMContext):
-    """Кнопка записи воды из меню"""
     await state.clear()
-    if not await check_user_registered(message):
+    user = await ensure_ready(message, state)
+    if not user:
         return
-    await record_water(message, state, glasses=1)
+    await message.answer(
+        f"💧 <b>Сколько воды?</b>\n\nИли напиши любое количество, например <i>«0,7 л воды»</i>.\n\n"
+        f"{await diary.liquid_brief_text(user)}",
+        reply_markup=get_water_keyboard()
+    )
 
 
-# ==================== Голосовые сообщения ====================
+@router.callback_query(F.data.startswith("water:"))
+async def water_amount(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user = await ensure_ready(callback.message, state, callback.from_user.id)
+    if not user:
+        return
+    ml = int(callback.data.split(":", 1)[1])
+    entry_id = await diary.save_water(user, ml)
+    await _safe_edit(
+        callback.message,
+        f"✅ <b>Записано: {ml} мл воды</b>\n\n{await diary.liquid_brief_text(user)}",
+        reply_markup=get_saved_entries_keyboard([('f', entry_id, 'воду')])
+    )
+
+
+# ==================== Голос ====================
 
 @router.message(F.voice)
 async def handle_voice_message(message: Message, state: FSMContext):
-    """Обработка голосовых сообщений"""
-    await state.clear()
-    if not await check_user_registered(message):
+    correction = await state.get_state() in (AIInput.pending_confirmation.state, AIInput.waiting_for_edit.state)
+    if not correction:
+        await state.clear()
+    user = await ensure_ready(message, state)
+    if not user:
         return
 
-    await message.answer("🎤 Слушаю... Обрабатываю голосовое сообщение...")
+    voice: Voice = message.voice
+    if voice.duration and voice.duration > MAX_VOICE_SECONDS:
+        await message.answer(f"🎤 Голосовое длиннее {MAX_VOICE_SECONDS} секунд. Запиши покороче или напиши текстом.")
+        return
+    limit_message = await check_limit(user, 'voice')
+    if limit_message:
+        await message.answer(limit_message, reply_markup=get_main_menu())
+        return
 
-    file_path = None
+    await message.answer("🎤 Слушаю...")
+    file_path = f"{MEDIA_DIR}/voice/{message.from_user.id}_{datetime.now().timestamp()}.ogg"
     try:
-        voice: Voice = message.voice
         file = await message.bot.get_file(voice.file_id)
-        file_path = f"{MEDIA_DIR}/voice/{message.from_user.id}_{datetime.now().timestamp()}.ogg"
         await message.bot.download_file(file.file_path, file_path)
-
-        transcribed_text = await transcribe_voice(file_path)
-
-        if is_water_input(transcribed_text):
-            await record_water(message, state, ml=parse_water_amount(transcribed_text))
-        elif is_food_input(transcribed_text):
-            await analyze_and_show_food(message, state, transcribed_text, 'voice', file_path)
-        elif is_workout_input(transcribed_text):
-            await analyze_and_show_workout(message, state, transcribed_text, 'voice')
-        else:
-            await message.answer(NOT_RECOGNIZED_TEXT, reply_markup=get_main_menu())
-
-    except Exception as e:
-        logger.exception("Ошибка обработки голосового сообщения")
-        await message.answer(
-            "❌ Не удалось обработать голосовое сообщение.\n\n"
-            "Попробуй ещё раз или используй текст."
-        )
+        text = (await transcribe_voice(file_path)).strip()
+        await log_ai(user.telegram_id, 'transcription', 'voice', text, status='added')
+    except Exception:
+        logger.exception("Ошибка расшифровки голосового")
+        await message.answer("❌ Не удалось распознать голосовое. Попробуй ещё раз или напиши текстом.")
+        return
     finally:
-        if file_path and os.path.exists(file_path):
+        if os.path.exists(file_path):
             os.remove(file_path)
+
+    text = text[:MAX_INPUT_CHARS]
+    await message.answer(f"🎤 <i>«{escape(text)}»</i>")
+    await run_analysis(message, state, user, text, 'voice', check=False, correction=correction)
 
 
 # ==================== Фото ====================
 
 @router.message(F.photo)
 async def handle_photo_message(message: Message, state: FSMContext):
-    """Обработка фотографий (еда) — с подтверждением"""
     await state.clear()
-    if not await check_user_registered(message):
+    user = await ensure_ready(message, state)
+    if not user:
+        return
+    caption = (message.caption or '').strip()[:MAX_INPUT_CHARS] or None
+    limit_message = await check_limit(user, 'photo')
+    if limit_message:
+        await message.answer(limit_message, reply_markup=get_main_menu())
         return
 
-    await message.answer("📸 Анализирую фото... Это может занять несколько секунд...")
-
-    file_path = None
+    await message.answer("📸 Анализирую фото...")
+    photo: PhotoSize = message.photo[-1]
+    file_path = f"{MEDIA_DIR}/photos/{message.from_user.id}_{datetime.now().timestamp()}.jpg"
     try:
-        photo: PhotoSize = message.photo[-1]
         file = await message.bot.get_file(photo.file_id)
-        file_path = f"{MEDIA_DIR}/photos/{message.from_user.id}_{datetime.now().timestamp()}.jpg"
         await message.bot.download_file(file.file_path, file_path)
-
-        user_context = await get_user_context(message.from_user.id)
-        food_data = await analyze_food_from_photo(file_path, user_context)
-
-        await show_food_confirmation(message, state, food_data, 'photo', file_path)
-
-    except Exception as e:
-        logger.exception("Ошибка анализа фото")
-        await message.answer(
-            "❌ Не удалось проанализировать фото.\n\n"
-            "Попробуй сфотографировать еду с другого ракурса."
-        )
+        await run_analysis(message, state, user, caption, 'photo', image_path=file_path, check=False)
+    except Exception:
+        logger.exception("Ошибка обработки фото")
+        await message.answer("❌ Не удалось обработать фото. Попробуй ещё раз.")
     finally:
-        if file_path and os.path.exists(file_path):
+        if os.path.exists(file_path):
             os.remove(file_path)
 
 
-# ==================== FSM-хэндлеры (до catch-all) ====================
+# ==================== Уточнения и подтверждение ====================
 
-@router.message(AIInput.pending_food_confirmation, not_menu_button)
-async def process_food_correction(message: Message, state: FSMContext):
-    """Уточнение к предыдущему анализу еды (текст после фото/голоса)"""
-    data = await state.get_data()
-    prev_text = data.get('pending_food_text', '')
-    prev_food = data.get('pending_food', {})
-    prev_name = prev_food.get('food_name', '')
-
-    # Объединяем контекст: что AI распознал + уточнение пользователя
-    combined = f"Ранее распознано: {prev_name}. Уточнение пользователя: {message.text.strip()}"
-    if prev_text:
-        combined = f"Оригинал: {prev_text}. Уточнение: {message.text.strip()}"
-
-    await message.answer("🤖 Учитываю уточнение, анализирую заново...")
-    source_type = data.get('pending_food_source_type', 'text_ai')
-    file_path = data.get('pending_food_file_path')
-    await analyze_and_show_food(message, state, combined, source_type, file_path)
-
-
-@router.message(AIInput.pending_workout_confirmation, not_menu_button)
-async def process_workout_correction(message: Message, state: FSMContext):
-    """Уточнение к предыдущему анализу тренировки"""
-    data = await state.get_data()
-    prev_text = data.get('pending_workout_text', '')
-    prev_workout = data.get('pending_workout', {})
-    prev_name = prev_workout.get('workout_type', '')
-
-    combined = f"Ранее распознано: {prev_name}. Уточнение пользователя: {message.text.strip()}"
-    if prev_text:
-        combined = f"Оригинал: {prev_text}. Уточнение: {message.text.strip()}"
-
-    await message.answer("🤖 Учитываю уточнение, анализирую заново...")
-    source_type = data.get('pending_workout_source_type', 'text_ai')
-    await analyze_and_show_workout(message, state, combined, source_type)
-
-
-@router.message(AIInput.waiting_for_food_edit, not_menu_button)
-async def process_food_edit(message: Message, state: FSMContext):
-    """Повторный анализ еды после редактирования"""
-    await message.answer("🤖 Анализирую заново...")
-    data = await state.get_data()
-    source_type = data.get('pending_food_source_type', 'text_ai')
-    file_path = data.get('pending_food_file_path')
-    await analyze_and_show_food(message, state, message.text.strip(), source_type, file_path)
-
-
-@router.message(AIInput.waiting_for_workout_edit, not_menu_button)
-async def process_workout_edit(message: Message, state: FSMContext):
-    """Повторный анализ тренировки после редактирования"""
-    await message.answer("🤖 Анализирую заново...")
-    data = await state.get_data()
-    source_type = data.get('pending_workout_source_type', 'text_ai')
-    await analyze_and_show_workout(message, state, message.text.strip(), source_type)
-
-
-@router.message(AIInput.waiting_for_workout_duration, not_menu_button)
-async def process_workout_duration_input(message: Message, state: FSMContext):
-    """Ввод длительности тренировки, если AI не смог определить"""
+@router.message(AIInput.waiting_for_duration, not_menu_button)
+async def process_duration(message: Message, state: FSMContext):
     try:
-        duration = int(message.text)
-        if duration < 1 or duration > 600:
-            await message.answer("Введи длительность от 1 до 600 минут:")
+        duration = int(message.text.strip().split()[0])
+    except (ValueError, IndexError):
+        await message.answer("Напиши длительность числом в минутах, например <i>45</i>.")
+        return
+    if not 1 <= duration <= 600:
+        await message.answer("Длительность — от 1 до 600 минут.")
+        return
+    data = await state.get_data()
+    pending = data['pending']
+    pending['result']['workouts'][data.get('duration_index', 0)]['duration_min'] = duration
+    await state.update_data(pending=pending)
+    user = await diary.get_user(message.from_user.id)
+    if await _ask_missing_duration(message, state):
+        return
+    await show_preview(message, state, user)
+
+
+@router.message(AIInput.pending_confirmation, not_menu_button)
+@router.message(AIInput.waiting_for_edit, not_menu_button)
+async def process_correction(message: Message, state: FSMContext):
+    """Уточнение к результату текстом: «порция была больше», «там 2 котлеты»"""
+    user = await ensure_ready(message, state)
+    if not user:
+        return
+    text = message.text.strip()
+    if len(text) > MAX_INPUT_CHARS:
+        await message.answer(f"Слишком длинное сообщение — до {MAX_INPUT_CHARS} символов.")
+        return
+    limit_message = await check_limit(user, 'text')
+    if limit_message:
+        await message.answer(limit_message, reply_markup=get_main_menu())
+        return
+    await message.answer("🤖 Учитываю уточнение...")
+    await run_analysis(message, state, user, text, 'text', check=False, correction=True)
+
+
+@router.callback_query(F.data == "ai_edit")
+async def edit_pending(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get('pending'):
+        await callback.answer("Данные устарели, отправь заново")
+        return
+    await state.set_state(AIInput.waiting_for_edit)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        "✏️ Напиши, что исправить:\n\n"
+        "<i>«Это была большая порция»</i>, <i>«Борщ и 2 котлеты»</i>, <i>«Бег был 40 минут»</i>"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "ai_cancel")
+async def cancel_pending(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _safe_edit(callback.message, "❌ Отменено, ничего не записал.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "ai_confirm")
+async def confirm_pending(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    pending = data.get('pending')
+    if not pending:
+        await callback.answer("Данные устарели, отправь заново")
+        return
+    user = await diary.get_user(callback.from_user.id)
+    result = pending['result']
+    editing = pending.get('editing')
+
+    if editing:
+        kind, entry_id = editing['kind'], editing['id']
+        if not await diary.update_entry(kind, entry_id, user, result):
+            await callback.answer("Не получилось сохранить исправление", show_alert=True)
             return
+        await mark_added(pending.get('interaction_id'), 'calorie_entry' if kind == 'f' else 'workout_entry', entry_id)
+        saved = [(kind, entry_id, '')]
+        header = "✅ <b>Исправлено!</b>"
+    else:
+        saved = await diary.save_result(user, result, pending['input_type'], pending.get('text'), result['confidence'])
+        first_kind, first_id, _ = saved[0]
+        await mark_added(pending.get('interaction_id'),
+                         'calorie_entry' if first_kind == 'f' else 'workout_entry', first_id)
+        header = "✅ <b>Добавлено!</b>"
 
-        data = await state.get_data()
-        workout_data = data['pending_workout']
-        workout_data['duration'] = duration
-        if not workout_data.get('calories_burned'):
-            workout_data['calories_burned'] = int(duration * 5)
-
-        source_type = data.get('pending_workout_source_type', 'text_ai')
-        original_text = data.get('pending_workout_text')
-        await show_workout_confirmation(message, state, workout_data, source_type, original_text)
-    except (ValueError, KeyError):
-        await message.answer("Пожалуйста, введи длительность числом:")
-
-
-# ==================== Callback-хэндлеры подтверждения ====================
-
-@router.callback_query(F.data == "ai_food_confirm")
-async def confirm_food(callback: CallbackQuery, state: FSMContext):
-    """Подтверждение и сохранение еды"""
-    data = await state.get_data()
-    food_data = data.get('pending_food')
-    if not food_data:
-        await callback.answer("Данные устарели, попробуй заново")
-        return
-
-    await save_food_to_db(
-        callback.from_user.id, food_data,
-        data.get('pending_food_source_type', 'text_ai'),
-        data.get('pending_food_file_path'),
-        data.get('pending_food_text')
-    )
-
-    # Статистика за сегодня
-    async with async_session() as session:
-        user_result = await session.execute(
-            select(User).where(User.telegram_id == callback.from_user.id)
-        )
-        user = user_result.scalar_one_or_none()
-        target = user.daily_calorie_target or 2000 if user else 2000
-        today_start = calc_today_start(user.current_day_start if user else None)
-
-        result = await session.execute(
-            select(func.sum(CalorieEntry.calories))
-            .where(CalorieEntry.user_id == callback.from_user.id)
-            .where(CalorieEntry.created_at >= today_start)
-        )
-        total_today = result.scalar() or 0
-
-        # Стаканы воды за сегодня
-        water_result = await session.execute(
-            select(func.count(CalorieEntry.id))
-            .where(CalorieEntry.user_id == callback.from_user.id)
-            .where(CalorieEntry.meal_type == 'water')
-            .where(CalorieEntry.created_at >= today_start)
-        )
-        water_today = water_result.scalar() or 0
-
-    remaining = target - total_today
-    progress_percent = min(100, int((total_today / target) * 100))
-    progress_bar = "█" * (progress_percent // 10) + "░" * (10 - progress_percent // 10)
-
-    water_info = f"\n💧 Вода: <b>{water_today}</b> / 8 стаканов" if water_today else ""
-
-    await callback.message.edit_text(
-        f"✅ <b>Добавлено!</b>\n\n"
-        f"🍽 <b>{food_data['food_name']}</b>: <b>{food_data['calories']} ккал</b>\n\n"
-        f"📊 <b>За сегодня:</b>\n"
-        f"{progress_bar} {progress_percent}%\n"
-        f"Съедено: <b>{total_today}</b> / {target} ккал\n"
-        f"Осталось: <b>{remaining}</b> ккал{water_info}"
-    )
     await state.clear()
+    names = ", ".join(escape(item['name']) for item in result['items'])
+    names += (", " if names and result['workouts'] else "") + ", ".join(
+        f"{escape(w['name'])} {w['duration_min']} мин" for w in result['workouts'])
+    await _safe_edit(
+        callback.message,
+        f"{header} {names}\n\n{await diary.day_brief_text(user)}",
+        reply_markup=get_saved_entries_keyboard(saved)
+    )
     await callback.answer()
 
 
-@router.callback_query(F.data == "ai_food_edit")
-async def edit_food(callback: CallbackQuery, state: FSMContext):
-    """Редактирование распознанной еды"""
-    await callback.message.edit_text(
-        "Опиши заново что ты ел(а), или уточни детали:\n\n"
-        'Например: <i>"Это была большая порция"</i> или <i>"Борщ и 2 котлеты"</i>'
-    )
-    await state.set_state(AIInput.waiting_for_food_edit)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "ai_workout_confirm")
-async def confirm_workout(callback: CallbackQuery, state: FSMContext):
-    """Подтверждение и сохранение тренировки"""
-    data = await state.get_data()
-    workout_data = data.get('pending_workout')
-    if not workout_data:
-        await callback.answer("Данные устарели, попробуй заново")
-        return
-
-    await save_workout_to_db(
-        callback.from_user.id, workout_data,
-        data.get('pending_workout_source_type', 'text_ai'),
-        data.get('pending_workout_text')
-    )
-
-    # Статистика за неделю
-    week_ago = datetime.now() - timedelta(days=7)
-    async with async_session() as session:
-        result = await session.execute(
-            select(
-                func.count(WorkoutEntry.id),
-                func.sum(WorkoutEntry.duration),
-                func.sum(WorkoutEntry.calories_burned)
-            )
-            .where(WorkoutEntry.user_id == callback.from_user.id)
-            .where(WorkoutEntry.created_at >= week_ago)
-        )
-        week_count, week_duration, week_calories = result.one()
-
-    await callback.message.edit_text(
-        f"✅ <b>Тренировка добавлена!</b>\n\n"
-        f"🏃 <b>{workout_data['workout_type']}</b>\n"
-        f"⏱ {workout_data['duration']} мин | "
-        f"🔥 ~{workout_data.get('calories_burned', 0)} ккал\n\n"
-        f"📊 <b>За последние 7 дней:</b>\n"
-        f"Тренировок: <b>{week_count or 0}</b>\n"
-        f"Время: <b>{week_duration or 0}</b> мин\n"
-        f"Сожжено: <b>~{week_calories or 0}</b> ккал"
-    )
-    await state.clear()
-    await callback.answer()
-
-
-@router.callback_query(F.data == "ai_workout_edit")
-async def edit_workout(callback: CallbackQuery, state: FSMContext):
-    """Редактирование распознанной тренировки"""
-    await callback.message.edit_text(
-        "Опиши заново свою тренировку:\n\n"
-        'Например: <i>"Бег 30 минут, 5 км"</i>'
-    )
-    await state.set_state(AIInput.waiting_for_workout_edit)
-    await callback.answer()
-
-
-# ==================== Catch-all текстовый хэндлер (последний) ====================
+# ==================== Любой текст (последний хэндлер) ====================
 
 @router.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MENU_BUTTONS))
 async def handle_text_message(message: Message, state: FSMContext):
-    """Обработка текстовых сообщений — только еда и тренировки"""
-    if not await check_user_registered(message):
+    await state.clear()
+    user = await ensure_ready(message, state)
+    if not user:
         return
-
     text = message.text.strip()
-
-    if is_water_input(text):
-        await record_water(message, state)
-
-    elif is_food_input(text):
-        await message.answer("🤖 Анализирую питание...")
-        await analyze_and_show_food(message, state, text, 'text_ai')
-
-    elif is_workout_input(text):
-        await message.answer("🤖 Анализирую тренировку...")
-        await analyze_and_show_workout(message, state, text, 'text_ai')
-
-    else:
-        await message.answer(NOT_RECOGNIZED_TEXT, reply_markup=get_main_menu())
+    if len(text) > MAX_INPUT_CHARS:
+        await message.answer(
+            f"✂️ Слишком длинное сообщение — до {MAX_INPUT_CHARS} символов. "
+            "Опиши еду или тренировку короче."
+        )
+        return
+    limit_message = await check_limit(user, 'text')
+    if limit_message:
+        await message.answer(limit_message, reply_markup=get_main_menu())
+        return
+    await message.answer("🤖 Анализирую...")
+    await run_analysis(message, state, user, text, 'text', check=False)

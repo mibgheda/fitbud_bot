@@ -13,9 +13,11 @@ from sqlalchemy import func as sa_func
 from database.database import (
     async_session, User, CalorieEntry, WorkoutEntry, WeightLog,
     HealthData, AIInteraction, MealPlan, MealPlanItem,
-    WorkoutPlan, WorkoutPlanItem, calc_today_start,
+    WorkoutPlan, WorkoutPlanItem,
 )
 from utils.openai_helper import AI_PROVIDER
+from utils.nutrition import calculate_calories
+from handlers.settings import ask_timezone
 from keyboards.reply import (
     get_main_menu,
     get_agreement_keyboard,
@@ -39,27 +41,6 @@ class ProfileSetup(StatesGroup):
     waiting_for_weight = State()
     waiting_for_activity = State()
     waiting_for_goal = State()
-
-
-def calculate_calories(gender: str, weight: float, height: int, age: int,
-                       activity_level: str = 'moderate', goal: str = 'maintain'):
-    """Расчёт BMR, TDEE и суточной нормы калорий по формуле Миффлина-Сан Жеора"""
-    if gender == 'male':
-        bmr = 10 * weight + 6.25 * height - 5 * age + 5
-    else:
-        bmr = 10 * weight + 6.25 * height - 5 * age - 161
-
-    activity_multipliers = {
-        'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55,
-        'active': 1.725, 'very_active': 1.9
-    }
-    tdee = bmr * activity_multipliers.get(activity_level, 1.55)
-
-    if goal == 'lose_weight':
-        return int(tdee - 500)
-    elif goal == 'gain_weight':
-        return int(tdee + 300)
-    return int(tdee)
 
 
 @router.message(CommandStart())
@@ -225,7 +206,9 @@ async def process_weight(message: Message, state: FSMContext):
 
         await state.update_data(weight=weight)
         await message.answer(
-            "Выбери свой уровень физической активности:",
+            "🚶 <b>Какая у тебя активность вне тренировок?</b>\n\n"
+            "Тренировки сюда не входят: я буду прибавлять их к норме калорий "
+            "в тот день, когда ты их запишешь.",
             reply_markup=get_activity_level_keyboard()
         )
         await state.set_state(ProfileSetup.waiting_for_activity)
@@ -235,7 +218,7 @@ async def process_weight(message: Message, state: FSMContext):
 
 # --- Активность ---
 
-@router.callback_query(F.data.startswith("activity_"))
+@router.callback_query(ProfileSetup.waiting_for_activity, F.data.startswith("activity_"))
 async def process_activity(callback: CallbackQuery, state: FSMContext):
     """Обработка уровня активности"""
     activity = callback.data.split("_", 1)[1]
@@ -251,94 +234,23 @@ async def process_activity(callback: CallbackQuery, state: FSMContext):
 
 # --- Цель + расчёт калорий и БЖУ ---
 
-@router.callback_query(F.data.startswith("goal_"))
+@router.callback_query(ProfileSetup.waiting_for_goal, F.data.startswith("goal_"))
 async def process_goal(callback: CallbackQuery, state: FSMContext):
-    """Обработка цели и завершение настройки профиля"""
+    """Цель — дальше часовой пояс и время утра (handlers/settings.py), там же сохранение профиля"""
     goal = callback.data.split("_", 1)[1]
-    data = await state.get_data()
-
-    daily_calories = calculate_calories(
-        data['gender'], data['weight'], data['height'], data['age'],
-        data['activity_level'], goal
-    )
-
-    # BMR/TDEE для отображения
-    if data['gender'] == 'male':
-        bmr = 10 * data['weight'] + 6.25 * data['height'] - 5 * data['age'] + 5
-    else:
-        bmr = 10 * data['weight'] + 6.25 * data['height'] - 5 * data['age'] - 161
-    activity_multipliers = {
-        'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55,
-        'active': 1.725, 'very_active': 1.9
-    }
-    tdee = bmr * activity_multipliers[data['activity_level']]
-
-    # Расчёт БЖУ (процент от калорий)
-    if goal == 'lose_weight':
-        protein_pct, fat_pct, carb_pct = 0.35, 0.25, 0.40
-    elif goal == 'gain_weight':
-        protein_pct, fat_pct, carb_pct = 0.25, 0.25, 0.50
-    else:
-        protein_pct, fat_pct, carb_pct = 0.30, 0.30, 0.40
-
-    protein_g = int(daily_calories * protein_pct / 4)
-    fat_g = int(daily_calories * fat_pct / 9)
-    carb_g = int(daily_calories * carb_pct / 4)
-
-    # Сохраняем в БД
-    async with async_session() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == callback.from_user.id)
-        )
-        user = result.scalar_one()
-
-        user.full_name = data.get('name', user.full_name)
-        user.age = data['age']
-        user.gender = data['gender']
-        user.height = data['height']
-        user.weight = data['weight']
-        user.activity_level = data['activity_level']
-        user.goal = goal
-        user.daily_calorie_target = daily_calories
-
-        await session.commit()
-
-    goal_text = {
-        'lose_weight': 'Похудение',
-        'maintain': 'Поддержание веса',
-        'gain_weight': 'Набор массы'
-    }
-
-    activity_text = {
-        'sedentary': 'Минимальный',
-        'light': 'Легкий',
-        'moderate': 'Средний',
-        'active': 'Высокий',
-        'very_active': 'Экстремальный'
-    }
-
-    await callback.message.edit_text(
-        f"✅ Отлично, <b>{data.get('name', 'друг')}</b>! Профиль настроен!\n\n"
-        f"<b>Твои параметры:</b>\n"
-        f"Пол: {'Мужской' if data['gender'] == 'male' else 'Женский'}\n"
-        f"Возраст: {data['age']} лет\n"
-        f"Рост: {data['height']} см | Вес: {data['weight']} кг\n"
-        f"Активность: {activity_text[data['activity_level']]}\n"
-        f"Цель: {goal_text[goal]}\n\n"
-        f"<b>Твоя суточная норма:</b>\n"
-        f"Калории: <b>{daily_calories} ккал/день</b>\n"
-        f"Белки: <b>{protein_g} г</b> | Жиры: <b>{fat_g} г</b> | Углеводы: <b>{carb_g} г</b>\n\n"
-        f"<i>BMR: {int(bmr)} ккал | TDEE: {int(tdee)} ккал</i>\n\n"
-        "Используй меню ниже для отслеживания питания и тренировок! 💪"
-    )
-
-    await callback.message.answer(
-        "Главное меню:",
-        reply_markup=get_main_menu()
-    )
-
-    await state.clear()
+    await state.update_data(goal=goal)
+    await callback.message.edit_reply_markup(reply_markup=None)
     await callback.answer()
+    await ask_timezone(callback.message, state, 'onboarding')
+
+
+@router.callback_query(F.data == "set:restart")
+async def restart_profile(callback: CallbackQuery, state: FSMContext):
+    """Заполнить профиль заново (из «👤 Мой профиль»)"""
+    await callback.answer()
+    await state.clear()
+    await callback.message.answer("Давай заполним профиль заново.\nКак тебя зовут? (имя для обращения)")
+    await state.set_state(ProfileSetup.waiting_for_name)
 
 
 # --- Помощь ---
@@ -350,59 +262,60 @@ async def cmd_help(message: Message, state: FSMContext):
     await state.clear()
     help_text = (
         "<b>📖 Справка FitBud</b>\n\n"
-        "<b>Основные функции:</b>\n\n"
-        "✨ <b>Быстрый ввод</b> — запись еды и тренировок через AI\n"
-        "🍽 <b>План питания</b> — недельный план с рецептами от AI\n"
-        "🏋️ <b>План тренировок</b> — персональная программа от AI\n"
-        "📈 <b>Моя статистика</b> — посмотреть прогресс\n"
-        "👤 <b>Мой профиль</b> — просмотр профиля\n"
-        "⚖️ <b>Записать вес</b> — добавить измерение веса\n\n"
-        "<b>AI-возможности:</b>\n"
-        "Напиши что съел или о тренировке — AI проанализирует!\n"
-        "Отправь фото еды — AI оценит калории и БЖУ.\n"
-        "Отправь голосовое — AI распознает и запишет.\n\n"
+        "<b>Как записывать:</b>\n"
+        "Просто напиши, что съел(а) или как тренировался(лась), пришли фото еды "
+        "или голосовое (до 1 минуты). ИИ посчитает калории, белки, жиры, углеводы, "
+        "клетчатку, сахар и жидкость — ты подтверждаешь или исправляешь.\n\n"
+        "✨ <b>Быстрый ввод</b> — примеры сообщений\n"
+        "💧 <b>Вода</b> — быстро записать воду\n"
+        "📋 <b>Мой день</b> — отчёт за день, исправить или удалить запись\n"
+        "📈 <b>Моя статистика</b> — неделя и месяц\n"
+        "👤 <b>Мой профиль</b> — нормы, часовой пояс, время утра, своя норма белка\n"
+        "⚖️ <b>Записать вес</b> — нормы пересчитаются\n\n"
+        "<b>Главное в отчёте:</b> добрать белки и клетчатку, не перебрать жиры, углеводы и сахар. "
+        "Тренировки прибавляются к норме калорий по формуле MET × вес × время.\n\n"
         "<b>Команды:</b>\n"
-        "/start — начать работу / перенастроить профиль\n"
-        "/help — показать эту справку\n"
-        "/new_day — начать новый день с нуля\n"
+        "/start — начать работу\n"
+        "/help — эта справка\n"
         "/delete_account — удалить аккаунт и все данные\n\n"
         "<b>Документы:</b>\n"
         "📋 <a href=\"https://telegra.ph/Polzovatelskoe-soglashenie-dlya-Telegram-bota-FitBud-02-09\">Пользовательское соглашение</a>\n"
-        "🔒 <a href=\"https://telegra.ph/Politika-obrabotki-personalnyh-dannyh-v-ramkah-Telegram-bota-FitBud-02-09\">Политика обработки ПДн</a>\n\n"
-        "<i>Для удаления аккаунта и всех данных используй /delete_account</i>"
+        "🔒 <a href=\"https://telegra.ph/Politika-obrabotki-personalnyh-dannyh-v-ramkah-Telegram-bota-FitBud-02-09\">Политика обработки ПДн</a>"
     )
     await message.answer(help_text, reply_markup=get_main_menu(), disable_web_page_preview=True)
 
 
-# --- Новый день ---
+# --- Новый день --- (отключено: день начинается по времени утра пользователя; не удалять, вдруг вернём)
 
-@router.message(Command("new_day"))
-async def cmd_new_day(message: Message, state: FSMContext):
-    """Начать новый день с 0"""
-    await state.clear()
 
-    async with async_session() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == message.from_user.id)
-        )
-        user = result.scalar_one_or_none()
+# @router.message(Command("new_day"))
+# async def cmd_new_day(message: Message, state: FSMContext):
+#     """Начать новый день с 0"""
+#     await state.clear()
 
-        if not user:
-            await message.answer("Сначала настрой профиль командой /start")
-            return
+#     async with async_session() as session:
+#         result = await session.execute(
+#             select(User).where(User.telegram_id == message.from_user.id)
+#         )
+#         user = result.scalar_one_or_none()
 
-        user.current_day_start = datetime.now()
-        await session.commit()
+#         if not user:
+#             await message.answer("Сначала настрой профиль командой /start")
+#             return
 
-        target = user.daily_calorie_target or 2000
+#         user.current_day_start = datetime.now()
+#         await session.commit()
 
-    await message.answer(
-        "🔄 <b>Новый день начат!</b>\n\n"
-        f"Калории: <b>0</b> / {target} ккал\n"
-        "Все счётчики обнулены.\n"
-        "Удачного дня! 💪",
-        reply_markup=get_main_menu()
-    )
+#         target = user.daily_calorie_target or 2000
+
+#     await message.answer(
+#         "🔄 <b>Новый день начат!</b>\n\n"
+#         f"Калории: <b>0</b> / {target} ккал\n"
+#         "Все счётчики обнулены.\n"
+#         "Удачного дня! 💪",
+#         reply_markup=get_main_menu()
+#     )
+
 
 
 # --- Удаление аккаунта ---

@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import os
 
 from database.database import init_db
-from handlers import start, calories, fitness, profile, stats, plans, ai_hub
+from handlers import start, settings, calories, fitness, profile, stats, plans, day, ai_hub
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -35,17 +35,19 @@ async def main():
     # Порядок важен: конкретные хэндлеры (кнопки меню, FSM-состояния) — первыми,
     # ai_hub (catch-all для текста) — последним, чтобы не перехватывать кнопки меню
     dp.include_router(start.router)
+    dp.include_router(settings.router)
     dp.include_router(calories.router)
     dp.include_router(fitness.router)
     dp.include_router(profile.router)
     dp.include_router(stats.router)
     dp.include_router(plans.router)
+    dp.include_router(day.router)  # до ai_hub: быстрая правка записи перехватывает текст раньше AI
     dp.include_router(ai_hub.router)
     
     # Инициализация базы данных
     await init_db()
     
-    logger.info("Бот запущен v7 (meal plan, workout plan)")
+    logger.info("Бот запущен v8 (КБЖУ + клетчатка, сахар, жидкость, часовой пояс, «Мой день»)")
     
     try:
         # Запуск бота

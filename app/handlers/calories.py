@@ -5,7 +5,8 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func
 from datetime import datetime, timedelta
 
-from database.database import async_session, CalorieEntry, User, calc_today_start
+from database.database import async_session, CalorieEntry, User
+from utils.daytime import day_bounds
 from keyboards.reply import get_meal_type_keyboard, get_main_menu, not_menu_button
 
 router = Router()
@@ -77,7 +78,7 @@ async def process_meal_type(callback: CallbackQuery, state: FSMContext):
             select(User).where(User.telegram_id == callback.from_user.id)
         )
         user = user_result.scalar_one_or_none()
-        today_start = calc_today_start(user.current_day_start if user else None)
+        today_start = day_bounds(user)[0]
         target = user.daily_calorie_target if user and user.daily_calorie_target else 2000
 
         # Получаем статистику за сегодня

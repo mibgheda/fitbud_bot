@@ -5,8 +5,10 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func, cast, Date
 from datetime import datetime, timedelta
 
-from database.database import async_session, CalorieEntry, WorkoutEntry, WeightLog, User, calc_today_start
+from database.database import async_session, CalorieEntry, WorkoutEntry, WeightLog, User
 from keyboards.reply import get_main_menu, not_menu_button
+from utils import diary, nutrition
+from utils.daytime import day_bounds
 
 router = Router()
 
@@ -18,141 +20,93 @@ class AddWeight(StatesGroup):
 
 @router.message(F.text == "📈 Моя статистика")
 async def show_statistics(message: Message, state: FSMContext):
-    """Показать статистику пользователя"""
+    """Статистика: сегодня кратко, неделя и месяц"""
     await state.clear()
+    from handlers.ai_hub import ensure_ready
+    user = await ensure_ready(message, state)
+    if not user:
+        return
+    user_id = message.from_user.id
+    week_start = day_bounds(user, 6)[0]
+    month_start = day_bounds(user, 29)[0]
+    norms = nutrition.daily_norms(user)
+
     async with async_session() as session:
-        # Получаем данные пользователя для /new_day и целевой калорийности
-        user_result = await session.execute(
-            select(User).where(User.telegram_id == message.from_user.id)
-        )
-        user = user_result.scalar_one_or_none()
-        today_start = calc_today_start(user.current_day_start if user else None)
-        week_ago = datetime.now() - timedelta(days=7)
-        month_ago = datetime.now() - timedelta(days=30)
+        # Дневные суммы за неделю (без воды) — средние по дням с записями
+        week_meals = (await session.execute(
+            select(CalorieEntry)
+            .where(CalorieEntry.user_id == user_id)
+            .where(CalorieEntry.created_at >= week_start)
+            .where(CalorieEntry.deleted_at.is_(None))
+        )).scalars().all()
 
-        # Статистика по калориям за сегодня
-        cal_today = await session.execute(
-            select(func.sum(CalorieEntry.calories))
-            .where(CalorieEntry.user_id == message.from_user.id)
-            .where(CalorieEntry.created_at >= today_start)
-        )
-        calories_today = cal_today.scalar() or 0
+        workout_week = (await session.execute(
+            select(func.count(WorkoutEntry.id), func.sum(WorkoutEntry.duration), func.sum(WorkoutEntry.calories_burned))
+            .where(WorkoutEntry.user_id == user_id)
+            .where(WorkoutEntry.created_at >= week_start)
+            .where(WorkoutEntry.deleted_at.is_(None))
+        )).one()
+        workout_month = (await session.execute(
+            select(func.count(WorkoutEntry.id), func.sum(WorkoutEntry.duration))
+            .where(WorkoutEntry.user_id == user_id)
+            .where(WorkoutEntry.created_at >= month_start)
+            .where(WorkoutEntry.deleted_at.is_(None))
+        )).one()
 
-        # Статистика по калориям за неделю (без воды)
-        cal_week_count = await session.execute(
-            select(func.count(CalorieEntry.id))
-            .where(CalorieEntry.user_id == message.from_user.id)
-            .where(CalorieEntry.created_at >= week_ago)
-            .where(CalorieEntry.meal_type != 'water')
-        )
-        meals_week = cal_week_count.scalar() or 0
-
-        # Средняя калорийность за день (только дни с записями, без воды)
-        daily_sums = (
-            select(
-                func.sum(CalorieEntry.calories).label('daily_total')
-            )
-            .where(CalorieEntry.user_id == message.from_user.id)
-            .where(CalorieEntry.created_at >= week_ago)
-            .where(CalorieEntry.meal_type != 'water')
-            .group_by(cast(CalorieEntry.created_at, Date))
-            .subquery()
-        )
-        avg_result = await session.execute(
-            select(func.avg(daily_sums.c.daily_total))
-        )
-        avg_week = int(avg_result.scalar() or 0)
-
-        # Статистика по тренировкам за неделю
-        workout_week = await session.execute(
-            select(
-                func.count(WorkoutEntry.id),
-                func.sum(WorkoutEntry.duration),
-                func.sum(WorkoutEntry.calories_burned)
-            )
-            .where(WorkoutEntry.user_id == message.from_user.id)
-            .where(WorkoutEntry.created_at >= week_ago)
-        )
-        workouts_week, duration_week, burned_week = workout_week.one()
-        workouts_week = workouts_week or 0
-        duration_week = duration_week or 0
-        burned_week = burned_week or 0
-
-        # Статистика по тренировкам за месяц
-        workout_month = await session.execute(
-            select(
-                func.count(WorkoutEntry.id),
-                func.sum(WorkoutEntry.duration)
-            )
-            .where(WorkoutEntry.user_id == message.from_user.id)
-            .where(WorkoutEntry.created_at >= month_ago)
-        )
-        workouts_month, duration_month = workout_month.one()
-        workouts_month = workouts_month or 0
-        duration_month = duration_month or 0
-
-        # Стаканы воды за сегодня
-        water_today_result = await session.execute(
-            select(func.count(CalorieEntry.id))
-            .where(CalorieEntry.user_id == message.from_user.id)
-            .where(CalorieEntry.meal_type == 'water')
-            .where(CalorieEntry.created_at >= today_start)
-        )
-        water_today = water_today_result.scalar() or 0
-
-        # Целевая калорийность (уже получили user выше)
-        target = user.daily_calorie_target if user and user.daily_calorie_target else 2000
-
-        # Прогресс по весу
-        weight_logs = await session.execute(
+        weight_data = (await session.execute(
             select(WeightLog.weight, WeightLog.created_at)
-            .where(WeightLog.user_id == message.from_user.id)
+            .where(WeightLog.user_id == user_id)
             .order_by(WeightLog.created_at.desc())
             .limit(2)
-        )
-        weight_data = weight_logs.all()
+        )).all()
 
-        weight_progress = ""
-        if len(weight_data) >= 2:
-            current_weight = weight_data[0][0]
-            previous_weight = weight_data[1][0]
-            weight_diff = current_weight - previous_weight
-            if weight_diff > 0:
-                weight_progress = f"\n📊 Вес: {current_weight} кг (+{weight_diff:.1f} кг)"
-            elif weight_diff < 0:
-                weight_progress = f"\n📊 Вес: {current_weight} кг ({weight_diff:.1f} кг)"
-            else:
-                weight_progress = f"\n📊 Вес: {current_weight} кг (без изменений)"
-        elif len(weight_data) == 1:
-            weight_progress = f"\n📊 Вес: {weight_data[0][0]} кг"
+    # Группируем еду по «дням пользователя»
+    days = {}
+    for entry in week_meals:
+        for days_ago in range(7):
+            start, end = day_bounds(user, days_ago)
+            if start <= entry.created_at < end:
+                day = days.setdefault(days_ago, {'calories': 0, 'protein': 0, 'fiber': 0, 'meals': 0})
+                day['calories'] += entry.calories or 0
+                day['protein'] += entry.protein or 0
+                day['fiber'] += entry.fiber or 0
+                if entry.meal_type != 'water':
+                    day['meals'] += 1
+                break
+    food_days = [d for d in days.values() if d['meals']]
+    meals_week = sum(d['meals'] for d in food_days)
+    count = len(food_days) or 1
+    avg_kcal = int(sum(d['calories'] for d in food_days) / count)
+    avg_protein = int(sum(d['protein'] for d in food_days) / count)
+    avg_fiber = int(sum(d['fiber'] for d in food_days) / count)
+    protein_days = sum(1 for d in food_days if d['protein'] >= norms['protein'])
+    fiber_days = sum(1 for d in food_days if d['fiber'] >= norms['fiber'])
 
-        # Формируем сообщение
-        remaining = target - calories_today
-        progress_percent = min(100, int((calories_today / target) * 100))
-        progress_bar = "█" * (progress_percent // 10) + "░" * (10 - progress_percent // 10)
+    workouts_week, duration_week, burned_week = (v or 0 for v in workout_week)
+    workouts_month, duration_month = (v or 0 for v in workout_month)
 
-        stats_text = (
-            f"📊 <b>Твоя статистика</b>\n\n"
-            f"<b>📅 Сегодня:</b>\n"
-            f"{progress_bar} {progress_percent}%\n"
-            f"Калории: <b>{calories_today}</b> / {target} ккал\n"
-            f"Осталось: <b>{remaining}</b> ккал\n"
-            f"💧 Вода: <b>{water_today}</b> / 8 стаканов\n\n"
-            f"<b>📆 За неделю:</b>\n"
-            f"Приемов пищи: <b>{meals_week}</b>\n"
-            f"Средняя калорийность: <b>{avg_week}</b> ккал/день\n"
-            f"Тренировок: <b>{workouts_week}</b>\n"
-            f"Время тренировок: <b>{duration_week}</b> мин\n"
-            f"Сожжено калорий: <b>~{burned_week}</b> ккал\n\n"
-            f"<b>📈 За месяц:</b>\n"
-            f"Тренировок: <b>{workouts_month}</b>\n"
-            f"Время тренировок: <b>{duration_month}</b> мин"
-        )
+    weight_progress = ""
+    if len(weight_data) >= 2:
+        diff = weight_data[0][0] - weight_data[1][0]
+        change = f"+{diff:.1f} кг" if diff > 0 else (f"{diff:.1f} кг" if diff < 0 else "без изменений")
+        weight_progress = f"\n⚖️ Вес: {weight_data[0][0]} кг ({change})"
+    elif weight_data:
+        weight_progress = f"\n⚖️ Вес: {weight_data[0][0]} кг"
 
-        if weight_progress:
-            stats_text += f"\n{weight_progress}"
-
-        await message.answer(stats_text, reply_markup=get_main_menu())
+    stats_text = (
+        f"📈 <b>Твоя статистика</b>\n\n"
+        f"{await diary.day_brief_text(user)}\n\n"
+        f"<b>📆 За 7 дней</b> (дней с записями: {len(food_days)}):\n"
+        f"Приёмов пищи: <b>{meals_week}</b>\n"
+        f"В среднем: <b>{avg_kcal}</b> ккал · 🥩 <b>{avg_protein}</b> г · 🌾 <b>{avg_fiber}</b> г в день\n"
+        f"Белок добран: <b>{protein_days}</b> дн. · клетчатка: <b>{fiber_days}</b> дн.\n"
+        f"Тренировок: <b>{workouts_week}</b> · {duration_week} мин · 🔥 {burned_week} ккал\n\n"
+        f"<b>📅 За 30 дней:</b>\n"
+        f"Тренировок: <b>{workouts_month}</b> · {duration_month} мин"
+        f"{weight_progress}\n\n"
+        "<i>Подробно по дням — «📋 Мой день»</i>"
+    )
+    await message.answer(stats_text, reply_markup=get_main_menu())
 
 
 @router.message(F.text == "⚖️ Записать вес")
@@ -194,6 +148,12 @@ async def process_weight(message: Message, state: FSMContext):
             if user:
                 old_weight = user.weight
                 user.weight = weight
+                # Нормы зависят от веса — пересчитываем
+                if user.daily_calorie_target and user.age and user.height and user.gender:
+                    user.daily_calorie_target = nutrition.calculate_calories(
+                        user.gender, weight, user.height, user.age,
+                        user.activity_level or 'moderate', user.goal or 'maintain'
+                    )
 
                 # Получаем предыдущие записи для статистики
                 prev_weights = await session.execute(
@@ -222,6 +182,8 @@ async def process_weight(message: Message, state: FSMContext):
                 date_str = date.strftime("%d.%m.%Y")
                 response += f"{date_str}: {w} кг\n"
 
+        if user and user.daily_calorie_target:
+            response += f"\n<b>Нормы пересчитаны:</b>\n{nutrition.norms_text(nutrition.daily_norms(user))}"
         await message.answer(response, reply_markup=get_main_menu())
         await state.clear()
 

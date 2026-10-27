@@ -34,10 +34,14 @@ class User(Base):
     weight = Column(Float)  # вес в кг
     height = Column(Integer)  # рост в см
     gender = Column(String(10))  # male/female
-    activity_level = Column(String(50))  # sedentary, light, moderate, active, very_active
+    activity_level = Column(String(50))  # активность вне тренировок: sedentary, light, moderate
     goal = Column(String(50))  # lose_weight, maintain, gain_weight
-    daily_calorie_target = Column(Integer)
-    current_day_start = Column(DateTime)  # /new_day override
+    daily_calorie_target = Column(Integer)  # норма без учёта тренировок
+    protein_per_kg = Column(Float)  # своя норма белка г/кг; NULL — по цели
+    utc_offset_min = Column(Integer)  # часовой пояс: смещение от UTC в минутах
+    tz_label = Column(String(50))  # подпись пояса для профиля («Москва»)
+    wake_hour = Column(Integer)  # во сколько у пользователя утро
+    current_day_start = Column(DateTime)  # /new_day override (команда отключена)
     last_active_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -54,14 +58,24 @@ class CalorieEntry(Base):
     protein = Column(Float, default=0)  # белки в граммах
     carbs = Column(Float, default=0)  # углеводы в граммах
     fats = Column(Float, default=0)  # жиры в граммах
-    meal_type = Column(String(50))  # breakfast, lunch, dinner, snack
-    
+    meal_type = Column(String(50))  # breakfast, lunch, dinner, snack, water
+    fiber = Column(Float, default=0)  # клетчатка, г
+    sugar = Column(Float, default=0)  # добавленный сахар, г
+
+    # Жидкость, мл
+    water_ml = Column(Integer, default=0)  # чистая вода
+    drinks_ml = Column(Integer, default=0)  # чай, кофе, соки и прочие безалкогольные
+    soup_ml = Column(Integer, default=0)  # засчитанная часть супа (треть объёма)
+    alcohol = Column(JSON)  # [{"type": "wine", "ml": 150}] — в жидкость не входит
+    items = Column(JSON)  # разбивка по продуктам от AI
+
     # AI-Hub поля
     source_type = Column(String(20), default='manual')  # manual, voice, photo, text_ai
     source_data = Column(JSON)  # Оригинальные данные (путь к фото, текст голоса и т.д.)
     ai_confidence = Column(Float)  # Уверенность AI в анализе (0-1)
     ai_notes = Column(Text)  # Заметки/рекомендации от AI
-    
+    deleted_at = Column(DateTime)  # мягкое удаление (можно отменить)
+
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -82,7 +96,9 @@ class WorkoutEntry(Base):
     distance = Column(Float)  # расстояние в км (если применимо)
     pace = Column(String(50))  # темп (если применимо)
     ai_confidence = Column(Float)
-    
+    met = Column(Float)  # коэффициент MET для расчёта сожжённых калорий
+    deleted_at = Column(DateTime)
+
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -145,7 +161,8 @@ class AIInteraction(Base):
     # Связь с созданными записями
     created_entry_type = Column(String(50))  # calorie_entry, workout_entry, health_data
     created_entry_id = Column(Integer)  # ID созданной записи
-    
+    status = Column(String(20))  # added, not_added, error
+
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -213,14 +230,6 @@ class WorkoutPlanItem(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
-def calc_today_start(user_day_start=None):
-    """Начало текущего дня с учётом /new_day"""
-    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    if user_day_start and user_day_start > midnight:
-        return user_day_start
-    return midnight
-
-
 async def init_db():
     """Инициализация базы данных"""
     async with engine.begin() as conn:
@@ -232,6 +241,24 @@ async def init_db():
             "ALTER TABLE ai_interactions ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER",
             "ALTER TABLE ai_interactions ADD COLUMN IF NOT EXISTS completion_tokens INTEGER",
             "ALTER TABLE ai_interactions ADD COLUMN IF NOT EXISTS total_tokens INTEGER",
+            "ALTER TABLE ai_interactions ADD COLUMN IF NOT EXISTS status VARCHAR(20)",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS protein_per_kg DOUBLE PRECISION",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS utc_offset_min INTEGER",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS tz_label VARCHAR(50)",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS wake_hour INTEGER",
+            "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS fiber DOUBLE PRECISION DEFAULT 0",
+            "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS sugar DOUBLE PRECISION DEFAULT 0",
+            "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS water_ml INTEGER DEFAULT 0",
+            "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS drinks_ml INTEGER DEFAULT 0",
+            "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS soup_ml INTEGER DEFAULT 0",
+            "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS alcohol JSON",
+            "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS items JSON",
+            "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+            "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS met DOUBLE PRECISION",
+            "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+            # Старые записи воды хранили объём в названии: «💧 Вода (1 ст. / 250 мл)»
+            "UPDATE calorie_entries SET water_ml = COALESCE(substring(food_name from '(\\d+) мл')::int, 250) "
+            "WHERE meal_type = 'water' AND (water_ml IS NULL OR water_ml = 0)",
         ]:
             await conn.execute(text(stmt))
 
