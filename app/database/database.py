@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Boolean, Text, JSON, text, func
+from sqlalchemy import Column, Integer, String, Float, DateTime, Date, BigInteger, Boolean, Text, JSON, text, func, UniqueConstraint
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -98,6 +98,13 @@ class WorkoutEntry(Base):
     ai_confidence = Column(Float)
     met = Column(Float)  # коэффициент MET для расчёта сожжённых калорий
     deleted_at = Column(DateTime)
+
+    # Тренировки с часов (source_type='watch')
+    external_id = Column(String(100))  # ключ для защиты от дублей при повторной отправке
+    started_at = Column(DateTime)  # UTC
+    ended_at = Column(DateTime)  # UTC
+    avg_hr = Column(Float)
+    max_hr = Column(Float)
 
     created_at = Column(DateTime, server_default=func.now())
 
@@ -230,6 +237,33 @@ class WorkoutPlanItem(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class HealthDevice(Base):
+    """Подключённые часы: ключ для команды iPhone (хранится только хэш)"""
+    __tablename__ = 'health_devices'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, nullable=False)
+    token_hash = Column(String(64), unique=True, nullable=False)
+    platform = Column(String(30), default='ios_shortcut')
+    last_sync_at = Column(DateTime)
+    revoked_at = Column(DateTime)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class HealthDaily(Base):
+    """Показатели с часов за день: шаги, активные калории, пульс покоя, сон и т. д."""
+    __tablename__ = 'health_daily'
+    __table_args__ = (UniqueConstraint('user_id', 'day', 'metric', name='ux_health_daily'),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, nullable=False)
+    day = Column(Date, nullable=False)  # календарный день по часам пользователя
+    metric = Column(String(40), nullable=False)
+    value = Column(Float, nullable=False)
+    extra = Column(JSON)  # подробности (для сна — время отхода ко сну и подъёма)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 async def init_db():
     """Инициализация базы данных"""
     async with engine.begin() as conn:
@@ -256,6 +290,13 @@ async def init_db():
             "ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
             "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS met DOUBLE PRECISION",
             "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+            "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS external_id VARCHAR(100)",
+            "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS started_at TIMESTAMP",
+            "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP",
+            "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS avg_hr DOUBLE PRECISION",
+            "ALTER TABLE workout_entries ADD COLUMN IF NOT EXISTS max_hr DOUBLE PRECISION",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_workout_external ON workout_entries (user_id, external_id) "
+            "WHERE external_id IS NOT NULL",
             # Старые записи воды хранили объём в названии: «💧 Вода (1 ст. / 250 мл)»
             "UPDATE calorie_entries SET water_ml = COALESCE(substring(food_name from '(\\d+) мл')::int, 250) "
             "WHERE meal_type = 'water' AND (water_ml IS NULL OR water_ml = 0)",

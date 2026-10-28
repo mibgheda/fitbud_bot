@@ -1,0 +1,15 @@
+# HTTPS для приёма данных с часов (команда iPhone → бот).
+# Сертификат Let's Encrypt Caddy получает и продлевает сам.
+fitbud.rentadevops.ru {
+	request_body {
+		max_size 512KB
+	}
+
+	handle /health/* {
+		reverse_proxy bot:8080
+	}
+
+	handle {
+		respond "FitBud" 404
+	}
+}

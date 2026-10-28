@@ -1,0 +1,26 @@
+# Дополняет docker-compose.yml на сервере (Docker Compose подхватывает этот файл сам).
+# Приём данных с часов: бот слушает порт 8080 внутри сети Docker, наружу — только Caddy (80/443).
+services:
+  bot:
+    environment:
+      HEALTH_API_PORT: "8080"
+      # Ссылка iCloud на команду iPhone — вписать, когда команда будет готова
+      HEALTH_SHORTCUT_URL: ""
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: fitbud_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bot
+
+volumes:
+  caddy_data:
+  caddy_config:

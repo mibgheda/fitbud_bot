@@ -143,7 +143,7 @@ def get_undo_keyboard(kind: str, entry_id: int):
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_day_keyboard(days_ago: int, buttons: list, max_days_back: int):
+def get_day_keyboard(days_ago: int, buttons: list, max_days_back: int, has_watch: bool = False):
     """Список записей дня: кнопки с номерами + навигация по дням. buttons — [(номер, kind, id)]"""
     keyboard = []
     row = []
@@ -154,6 +154,8 @@ def get_day_keyboard(days_ago: int, buttons: list, max_days_back: int):
             row = []
     if row:
         keyboard.append(row)
+    if has_watch:
+        keyboard.append([InlineKeyboardButton(text="⌚ Данные с часов", callback_data=f"wr:{days_ago}")])
     nav = []
     if days_ago < max_days_back:
         nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"day:{days_ago + 1}"))
@@ -212,6 +214,7 @@ def get_profile_settings_keyboard():
         [InlineKeyboardButton(text="🕐 Часовой пояс", callback_data="set:tz"),
          InlineKeyboardButton(text="🌅 Время утра", callback_data="set:wake")],
         [InlineKeyboardButton(text="🥩 Своя норма белка", callback_data="set:protein")],
+        [InlineKeyboardButton(text="⌚ Часы Apple Watch", callback_data="watch:menu")],
         [InlineKeyboardButton(text="🔄 Заполнить профиль заново", callback_data="set:restart")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

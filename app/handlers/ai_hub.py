@@ -436,6 +436,11 @@ async def confirm_pending(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_saved_entries_keyboard(saved)
     )
     await callback.answer()
+    # Тренировка, записанная текстом, могла уже прийти с часов
+    from handlers.watch import check_manual_workout
+    for kind, entry_id, _ in saved:
+        if kind == 'w':
+            await check_manual_workout(callback.bot, user, entry_id)
 
 
 # ==================== Любой текст (последний хэндлер) ====================

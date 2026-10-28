@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from database.database import async_session, User, CalorieEntry, WorkoutEntry
 from utils.daytime import day_bounds, day_label, to_local, utc_now
-from utils import nutrition
+from utils import nutrition, health
 
 UNDO_WINDOW = timedelta(minutes=2)
 
@@ -234,12 +234,18 @@ def entry_details(kind: str, entry, user: User) -> str:
     time_text = to_local(entry.created_at, user).strftime('%d.%m %H:%M')
     if kind == 'w':
         lines = [f"🏃 <b>{escape(entry.workout_type)}</b>", f"🕐 {time_text}", f"⏱ {entry.duration} мин"]
+        if entry.source_type == 'watch':
+            lines[0] += " ⌚"
+            if entry.started_at and entry.ended_at:
+                lines[1] = f"🕐 {to_local(entry.started_at, user):%d.%m %H:%M}–{to_local(entry.ended_at, user):%H:%M}"
+            if entry.avg_hr:
+                lines.append(f"❤️ Пульс {int(entry.avg_hr)}" + (f", максимум {int(entry.max_hr)}" if entry.max_hr else ""))
         if entry.distance:
             lines.append(f"📏 {nutrition.fmt(entry.distance)} км")
         if entry.met:
             lines.append(f"🔥 {nutrition.workout_formula(entry.met, user.weight or 70, entry.duration)} ккал")
         else:
-            lines.append(f"🔥 {entry.calories_burned} ккал")
+            lines.append(f"🔥 {entry.calories_burned} ккал" + (" — по данным часов" if entry.source_type == 'watch' else ""))
         return "\n".join(lines)
 
     lines = [f"🍽 <b>{escape(entry.food_name)}</b>", f"🕐 {time_text}", ""]
@@ -282,12 +288,18 @@ def previous_result(kind: str, entry) -> Dict:
     return {'items': items, 'workouts': []}
 
 
-async def day_report_text(user: User, days_ago: int = 0) -> Tuple[str, List[Tuple[int, str, int]]]:
-    """Полный отчёт за день + список записей. Возвращает (текст, [(номер, kind, id)])"""
+async def day_report_text(user: User, days_ago: int = 0) -> Tuple[str, List[Tuple[int, str, int]], bool]:
+    """
+    Полный отчёт за день + список записей.
+    Возвращает (текст, [(номер, kind, id)], есть ли данные с часов за этот день).
+    """
     entries, workouts = await load_day(user, days_ago)
     norms = nutrition.daily_norms(user)
     totals = nutrition.day_totals(entries, workouts)
-    text = nutrition.day_report(totals, norms, workouts, user.weight or 70, day_label(user, days_ago))
+    metrics = await health.day_metrics(user, days_ago)
+    watch = health.watch_energy(user, metrics, workouts)
+    has_watch = bool(metrics) or any(w.source_type == 'watch' for w in workouts)
+    text = nutrition.day_report(totals, norms, workouts, user.weight or 70, day_label(user, days_ago), watch)
 
     rows = sorted(
         [('f', e) for e in entries] + [('w', w) for w in workouts],
@@ -306,7 +318,7 @@ async def day_report_text(user: User, days_ago: int = 0) -> Tuple[str, List[Tupl
                 name = escape(entry.food_name[:60])
             else:
                 extra = f"🔥 {entry.calories_burned} ккал"
-                name = f"{escape(entry.workout_type)}, {entry.duration} мин"
+                name = f"{'⌚ ' if entry.source_type == 'watch' else ''}{escape(entry.workout_type)}, {entry.duration} мин"
             lines.append(f"{number}. {time_text} {name} — {extra}")
             buttons.append((number, kind, entry.id))
         lines.append("\n<i>Нажми на номер, чтобы исправить или удалить запись.</i>")
@@ -317,7 +329,7 @@ async def day_report_text(user: User, days_ago: int = 0) -> Tuple[str, List[Tupl
         text += "\n" + listing
     else:
         text += "\n\n<i>За этот день записей нет.</i>"
-    return text, buttons
+    return text, buttons, has_watch
 
 
 async def day_brief_text(user: User) -> str:
@@ -325,7 +337,8 @@ async def day_brief_text(user: User) -> str:
     entries, workouts = await load_day(user)
     norms = nutrition.daily_norms(user)
     totals = nutrition.day_totals(entries, workouts)
-    return nutrition.day_brief(totals, norms)
+    watch = health.watch_energy(user, await health.day_metrics(user), workouts)
+    return nutrition.day_brief(totals, norms, watch)
 
 
 async def liquid_brief_text(user: User) -> str:

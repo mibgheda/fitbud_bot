@@ -16,7 +16,8 @@ from keyboards.reply import (
     get_main_menu, get_day_keyboard, get_entry_keyboard, get_undo_keyboard, get_saved_entries_keyboard,
     not_menu_button,
 )
-from utils import diary
+from utils import diary, health
+from utils.daytime import day_label
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -36,8 +37,13 @@ async def my_day(message: Message, state: FSMContext):
     user = await ensure_ready(message, state)
     if not user:
         return
-    text, buttons = await diary.day_report_text(user, 0)
-    await message.answer(text, reply_markup=get_day_keyboard(0, buttons, MAX_DAYS_BACK))
+    text, buttons, has_watch = await diary.day_report_text(user, 0)
+    await message.answer(text, reply_markup=get_day_keyboard(0, buttons, MAX_DAYS_BACK, has_watch))
+    if has_watch:
+        _, workouts = await diary.load_day(user, 0)
+        report = await health.watch_report(user, 0, workouts, day_label(user, 0))
+        if report:
+            await message.answer(report)
 
 
 @router.callback_query(F.data.startswith("day:"))
@@ -47,8 +53,22 @@ async def day_navigation(callback: CallbackQuery, state: FSMContext):
     if not user:
         return
     days_ago = max(0, min(MAX_DAYS_BACK, int(callback.data.split(":", 1)[1])))
-    text, buttons = await diary.day_report_text(user, days_ago)
-    await _safe_edit(callback.message, text, reply_markup=get_day_keyboard(days_ago, buttons, MAX_DAYS_BACK))
+    text, buttons, has_watch = await diary.day_report_text(user, days_ago)
+    await _safe_edit(callback.message, text,
+                     reply_markup=get_day_keyboard(days_ago, buttons, MAX_DAYS_BACK, has_watch))
+
+
+@router.callback_query(F.data.startswith("wr:"))
+async def watch_day(callback: CallbackQuery, state: FSMContext):
+    """⌚ Данные с часов за выбранный день"""
+    await callback.answer()
+    user = await ensure_ready(callback.message, state, callback.from_user.id)
+    if not user:
+        return
+    days_ago = max(0, min(MAX_DAYS_BACK, int(callback.data.split(":", 1)[1])))
+    _, workouts = await diary.load_day(user, days_ago)
+    report = await health.watch_report(user, days_ago, workouts, day_label(user, days_ago))
+    await callback.message.answer(report or "⌚ За этот день данных с часов нет.")
 
 
 @router.callback_query(F.data.startswith("ev:"))

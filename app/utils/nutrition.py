@@ -68,6 +68,25 @@ def calculate_calories(gender: str, weight: float, height: int, age: int,
     return int(tdee)
 
 
+def bmr(user) -> float:
+    """Основной обмен (Миффлин–Сан Жеор)"""
+    base = 10 * (user.weight or 70) + 6.25 * (user.height or 170) - 5 * (user.age or 30)
+    return base + 5 if user.gender == 'male' else base - 161
+
+
+def watch_base_calories(user) -> int:
+    """
+    База для дней с часами: обмен × 1,2 ± цель. Всё движение за день (шаги, тренировки)
+    прибавляется отдельно — из активных калорий Apple Watch.
+    """
+    base = bmr(user) * 1.2
+    if user.goal == 'lose_weight':
+        base -= 500
+    elif user.goal == 'gain_weight':
+        base += 300
+    return int(base)
+
+
 def fmt(value: float) -> str:
     """Число по-русски: 2,2 вместо 2.2"""
     return f"{value:g}".replace('.', ',')
@@ -247,25 +266,47 @@ def _tips(totals: Dict, norms: Dict) -> List[str]:
     return tips[:2]
 
 
-def day_report(totals: Dict, norms: Dict, workouts, user_weight: float, title: str) -> str:
-    """Отчёт за день: что добрать и что не перебрать"""
-    burned = totals['burned']
-    kcal_limit = norms['calories'] + burned
-    left = kcal_limit - totals['calories']
+def _workout_line(w, user_weight: float) -> str:
+    if w.met:
+        return f"   • {escape(w.workout_type)}, {w.duration} мин: {workout_formula(w.met, user_weight, w.duration)}"
+    mark = " ⌚" if getattr(w, 'source_type', None) == 'watch' else ""
+    return f"   • {escape(w.workout_type)}, {w.duration} мин: {w.calories_burned}{mark}"
 
+
+def day_report(totals: Dict, norms: Dict, workouts, user_weight: float, title: str,
+               watch: Optional[Dict] = None) -> str:
+    """
+    Отчёт за день: что добрать и что не перебрать.
+    watch — энергия с часов (utils.health.watch_energy): тогда норма = база + активность с часов.
+    """
     lines = [f"📊 <b>{escape(title)}</b>", ""]
-    lines.append(f"🎯 Норма: <b>{norms['calories']}</b> ккал")
-    lines.append(f"🍽 Съедено: <b>{int(totals['calories'])}</b> ккал")
-    if workouts:
-        lines.append(f"🔥 Сожжено: <b>+{burned}</b> ккал")
-        for w in workouts:
-            if w.met:
-                lines.append(f"   • {escape(w.workout_type)}, {w.duration} мин: "
-                             f"{workout_formula(w.met, user_weight, w.duration)}")
-            else:
-                lines.append(f"   • {escape(w.workout_type)}, {w.duration} мин: {w.calories_burned}")
+    eaten = int(totals['calories'])
+    if watch:
+        base = watch['base']
+        burned = watch['active'] + watch['manual_kcal']
+        kcal_limit = base + burned
+        lines.append(f"🎯 База: <b>{base}</b> ккал  <i>(обмен × 1,2 ± цель)</i>")
+        lines.append(f"🍽 Съедено: <b>{eaten}</b> ккал")
+        lines.append(f"⌚ Активность с часов: <b>+{watch['active']}</b> ккал")
+        for w in watch['watch_workouts']:
+            lines.append(f"   🏃 {escape(w.workout_type)}, {w.duration} мин — {w.calories_burned}")
+        steps = f" ({watch['steps']:,} шагов)".replace(',', ' ') if watch['steps'] else ""
+        lines.append(f"   👟 Шаги и движение{steps} — {watch['movement']}")
+        if watch['manual_workouts']:
+            lines.append(f"✍️ Тренировки без часов: <b>+{watch['manual_kcal']}</b> ккал")
+            lines += [_workout_line(w, user_weight) for w in watch['manual_workouts']]
+        formula = f"{base} − {eaten} + {watch['active']}" + (f" + {watch['manual_kcal']}" if watch['manual_kcal'] else "")
+    else:
+        burned = totals['burned']
+        kcal_limit = norms['calories'] + burned
+        lines.append(f"🎯 Норма: <b>{norms['calories']}</b> ккал")
+        lines.append(f"🍽 Съедено: <b>{eaten}</b> ккал")
+        if workouts:
+            lines.append(f"🔥 Сожжено: <b>+{burned}</b> ккал")
+            lines += [_workout_line(w, user_weight) for w in workouts]
+        formula = f"{norms['calories']} − {eaten}" + (f" + {burned}" if burned else "")
+    left = kcal_limit - totals['calories']
     sign = "Осталось" if left >= 0 else "Перебор"
-    formula = f"{norms['calories']} − {int(totals['calories'])}" + (f" + {burned}" if burned else "")
     lines.append(f"{'✅' if left >= 0 else '🔴'} {sign}: <b>{abs(int(left))}</b> ккал  <i>({formula})</i>")
     lines.append(progress_bar(totals['calories'], kcal_limit))
 
@@ -342,11 +383,17 @@ def liquid_brief(totals: Dict, norms: Dict) -> str:
     return text
 
 
-def day_brief(totals: Dict, norms: Dict) -> str:
+def day_brief(totals: Dict, norms: Dict, watch: Optional[Dict] = None) -> str:
     """Короткая сводка дня после добавления записи"""
-    burned = totals['burned']
-    left = norms['calories'] + burned - totals['calories']
-    burned_text = f" + {burned} 🔥" if burned else ""
+    if watch:
+        base = watch['base']
+        burned = watch['active'] + watch['manual_kcal']
+        burned_text = f" + {watch['active']} ⌚" + (f" + {watch['manual_kcal']} 🔥" if watch['manual_kcal'] else "")
+    else:
+        base = norms['calories']
+        burned = totals['burned']
+        burned_text = f" + {burned} 🔥" if burned else ""
+    left = base + burned - totals['calories']
     left_text = f"осталось <b>{int(left)}</b>" if left >= 0 else f"🔴 перебор <b>{int(-left)}</b>"
 
     def need(key: str) -> str:
@@ -360,7 +407,7 @@ def day_brief(totals: Dict, norms: Dict) -> str:
     liquid = totals['water_ml'] + totals['drinks_ml'] + totals['soup_ml']
     lines = [
         "📊 <b>За сегодня:</b>",
-        f"🔥 {int(totals['calories'])} / {norms['calories']}{burned_text} ккал → {left_text}",
+        f"🔥 {int(totals['calories'])} / {base}{burned_text} ккал → {left_text}",
         f"🥩 Белки {_num(totals['protein'])}/{norms['protein']} г {need('protein')} · "
         f"🌾 Клетчатка {_num(totals['fiber'])}/{norms['fiber']} г {need('fiber')}",
         f"🧈 Жиры {_num(totals['fats'])}/{norms['fats']} {limit('fats')} · "
