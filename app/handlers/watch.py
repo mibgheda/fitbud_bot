@@ -7,7 +7,7 @@ import os
 from html import escape
 
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
 
 from database.database import WorkoutEntry
 from utils import diary, health, nutrition
@@ -57,15 +57,21 @@ async def watch_key(callback: CallbackQuery):
     link = (f'<a href="{SHORTCUT_URL}">Установить команду FitBud</a>' if SHORTCUT_URL
             else "<i>ссылка на команду появится позже</i>")
     await callback.message.answer(
-        "🔑 <b>Твой ключ для часов</b> (нажми, чтобы скопировать):\n\n"
-        f"<code>{token}</code>\n\n"
+        "🔑 <b>Ключ для часов</b> — в следующем сообщении.\n\n"
         "<b>Как подключить:</b>\n"
         f"1. {link}\n"
         "2. При установке команда попросит ключ — вставь его.\n"
         "3. В «Командах» → «Автоматизация» добавь запуск команды при открытии Telegram "
         "и в 13:00, 18:00 и 22:00, режим «Выполнять сразу».\n\n"
-        "Старый ключ, если был, больше не работает. Никому не пересылай этот ключ.",
+        "Старый ключ, если был, больше не работает. Никому не пересылай ключ и не показывай на скриншотах.",
         disable_web_page_preview=True
+    )
+    # Ключ — отдельным сообщением: долгое нажатие копирует только его; кнопка копирует в одно касание
+    await callback.message.answer(
+        f"<code>{token}</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📋 Скопировать ключ", copy_text=CopyTextButton(text=token))
+        ]])
     )
 
 
