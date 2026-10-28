@@ -7,6 +7,8 @@ JSON-объект с плоскими ключами, значения — те�
 
   <metric>_d   — даты начала, ISO 8601 с часовым поясом
   <metric>_v   — значения (порядок совпадает с _d)
+  <metric>_w_d / _w_v и <metric>_p_d / _p_v — то же по часам суток отдельно с часов и с iPhone
+                 (шаги, дистанция, калории): сервер убирает задвоение, как «Здоровье»
   sleep_d, sleep_e, sleep_v                — начало, конец и фаза сна
   workout_d, workout_e, workout_t          — начало, конец, вид тренировки
   workout_kcal, workout_km, workout_hr, workout_hrmax  — необязательные
@@ -166,10 +168,41 @@ def _to_utc_naive(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def _merge_sources(payload: Dict, metric: str) -> Optional[Dict[date, float]]:
+    """
+    Шаги, дистанция, калории — с часов (<metric>_w_*) и с iPhone (<metric>_p_*) по часам суток.
+    Как в «Здоровье»: если в один и тот же час считали оба устройства, берём большее, а не сумму.
+    None — если таких данных в запросе нет.
+    """
+    hours: Dict[datetime, Tuple[date, Dict[str, float]]] = {}
+    for source in ('w', 'p'):
+        dates = _lines(payload.get(f'{metric}_{source}_d'))
+        values = _lines(payload.get(f'{metric}_{source}_v'))
+        for date_text, value_text in zip(dates, values):
+            moment, value = _datetime(date_text), _number(value_text)
+            if moment is None or value is None or value < 0:
+                continue
+            hour = moment.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            day, by_source = hours.setdefault(hour, (moment.date(), {}))
+            by_source[source] = by_source.get(source, 0) + value
+    if not hours:
+        return None
+    days: Dict[date, float] = {}
+    for day, by_source in hours.values():
+        days[day] = days.get(day, 0) + max(by_source.values())
+    return days
+
+
 def parse_daily(payload: Dict) -> Dict[Tuple[date, str], float]:
     """{(день, показатель): значение} — день берётся из даты образца в поясе телефона"""
     result: Dict[Tuple[date, str], float] = {}
     for metric, (mode, low, high) in DAILY_METRICS.items():
+        merged = _merge_sources(payload, metric) if mode == 'sum' else None
+        if merged is not None:
+            for day, value in merged.items():
+                if low <= value <= high:
+                    result[(day, metric)] = round(value, 2)
+            continue
         dates = _lines(payload.get(f'{metric}_d'))
         values = _lines(payload.get(f'{metric}_v'))
         grouped: Dict[date, List[float]] = {}
