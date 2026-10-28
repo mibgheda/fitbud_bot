@@ -20,6 +20,9 @@ services:
       - caddy_config:/config
     depends_on:
       - bot
+    # Та же сеть, что у бота и базы в docker-compose.yml, иначе Caddy не найдёт адрес «bot»
+    networks:
+      - fitbud_network
 
 volumes:
   caddy_data:
